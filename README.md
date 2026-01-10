@@ -1,19 +1,19 @@
- # Concurrent Log Streamer
+# Concurrent Log Streamer
 
-Bu proje, Go dilinin ileri seviye özelliklerini (Go Routines, Channels, WebSockets) kullanarak yüksek performanslı bir veri işleme ve anlık izleme sisteminin nasıl kurulacağını göstermek amacıyla geliştirilmiştir.
+This project was developed to demonstrate how to build a high-performance data processing and real-time monitoring system using advanced features of the Go language (Go Routines, Channels, WebSockets).
 
-##  Öne Çıkan Özellikler
-- **Backend (Go):** - Eşzamanlı (Concurrent) veri üretimi ve işlenmesi.
-    - Go Routines ile worker pool mimarisi.
-    - Tip güvenli kanal (Channel) yönetimi.
-    - WebSocket üzerinden gerçek zamanlı veri akışı.
-- **Frontend (React):** - Backend'den gelen anlık verilerin reaktif olarak görselleştirilmesi.
+## Key Features
+- **Backend (Go):** - Concurrent data generation and processing.
+- Worker pool architecture with Go Routines.
+- Type-safe channel management.
+- Real-time data streaming via WebSocket.
+- **Frontend (React):** - Reactive visualization of real-time data from the backend.
 
-##  Teknolojiler
-- **Dil:** Go (Golang)
+## Technologies
+- **Language:** Go (Golang)
 - **Concurrency:** Goroutines, Channels, Select, Mutex
 - **API/Communication:** Gorilla WebSocket, Standard Net/HTTP
 - **Frontend:** React, Vite, TailwindCSS
 
-##  Amaç
-Sistemin amacı, arka planda yoğun bir şekilde üretilen log ve metrik verilerini ana thread'i bloklamadan işlemek ve en düşük gecikmeyle kullanıcı arayüzüne yansıtmaktır.
+## Purpose
+The purpose of the system is to process log and metric data generated intensively in the background without blocking the main thread and to display it to the user interface with the lowest possible latency.
