@@ -2,6 +2,8 @@
 
 SecureStream AI is a high-performance, autonomous security monitoring and diagnostics platform designed for modern B2B microservice architectures. It combines real-time concurrent log processing with a stunning 3D topology visualization and an AI-powered security assistant (J.A.R.V.I.S) to provide proactive threat management and system observability.
 
+![Full Dashboard Topology](docs/images/topology.png)
+
 ## 🚀 Key Features
 
 ### 1. 🌌 Interactive 3D Network Topology
@@ -9,6 +11,8 @@ Visualize your entire microservice ecosystem in a dynamic 3D space.
 *   **Real-time Data Flows:** Watch "impulse signals" travel between nodes as logs are processed.
 *   **Hierarchical Deep-Dive:** Click on a service to expand and view internal microservices and functional call chains.
 *   **Visual Health Indicators:** Nodes change color based on health status (latency, errors, or security threats).
+
+![Expanded View](docs/images/expanded.png)
 
 ### 2. 🤖 J.A.R.V.I.S AI Security Assistant
 Integrated autonomous security agent powered by **Llama-3 (Groq API)**.
@@ -27,12 +31,16 @@ Built with **Go**, the backend is designed to handle thousands of logs per secon
 *   **Action Control Panel:** A transparent audit trail for all autonomous security actions and blocked IPs.
 *   **Live Log Stream:** Filterable, high-speed log view with instant threat highlighting.
 
+![Threat Detection](docs/images/threats.png)
+
 ## 🛠️ Technology Stack
 
 *   **Backend:** Go (Gin Framework), Redis (Rate Limiting), PostgreSQL (Audit Trails), Gorilla WebSocket (Live Streams).
 *   **Frontend:** React, Vite, `react-force-graph-3d` (Topology), CSS-in-JS (Premium Glassmorphism Design).
 *   **AI/LLM:** Groq Llama-3 (8B/70B) for intent processing and natural language interaction.
 *   **DevOps:** Docker Compose for full-stack containerization.
+
+![Action Control](docs/images/actions.png)
 
 ## 📦 Getting Started
 
@@ -44,8 +52,8 @@ Built with **Go**, the backend is designed to handle thousands of logs per secon
 
 1.  Clone the repository:
     ```bash
-    git clone https://github.com/your-username/SecureStream-AI.git
-    cd SecureStream-AI
+    git clone https://github.com/NiyaziMert/Concurrent-Log-Streamer.git
+    cd Concurrent-Log-Streamer
     ```
 
 2.  Set up environment variables:
