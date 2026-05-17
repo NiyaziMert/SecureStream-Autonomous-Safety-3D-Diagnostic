@@ -354,6 +354,10 @@ export default function App() {
           setActiveFlows(prev => [...prev.filter(f => now - f.ts < 3000), { source: msg.source, target: msg.target, ts: now }])
           return
         }
+        if (msg.msg_type === 'log') {
+          setLogs(prev => [...prev, { source: msg.source, raw_log: msg.raw_log, ts: new Date(msg.timestamp) }].slice(-300))
+          return
+        }
         const alert = msg
         alert.timestamp = new Date().toISOString()
         setAlerts(prev => [alert, ...prev].slice(0, 200))

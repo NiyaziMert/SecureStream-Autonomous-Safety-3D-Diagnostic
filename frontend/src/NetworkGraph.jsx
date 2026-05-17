@@ -24,12 +24,50 @@ function getNodeColor(node) {
 
 export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeSelect }) {
   const [allData, setAllData] = useState({ nodes: [], links: [] });
+  const [kafkaEnabled, setKafkaEnabled] = useState(false);
   const [expandedNodes, setExpandedNodes] = useState(new Set());
   const [hoveredNode, setHoveredNode] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
   const fgRef = useRef();
   const containerRef = useRef(null);
   const [dims, setDims] = useState({ w: 800, h: 600 });
+
+  const loadTopology = useCallback(() => {
+    fetch(`${apiUrl}/topology`, { headers: { 'X-API-Key': apiKey } })
+      .then(r => r.json())
+      .then(d => setAllData(d))
+      .catch(() => {});
+  }, [apiUrl, apiKey]);
+
+  const handleToggleKafka = async () => {
+    const nextVal = !kafkaEnabled;
+    try {
+      const res = await fetch(`${apiUrl}/kafka/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        body: JSON.stringify({ enabled: nextVal })
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        setKafkaEnabled(nextVal);
+        setTimeout(loadTopology, 100);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Sync Kafka status on mount
+  useEffect(() => {
+    fetch(`${apiUrl}/kafka/status`, { headers: { 'X-API-Key': apiKey } })
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'success') {
+          setKafkaEnabled(data.kafka_stream === 'enabled');
+        }
+      })
+      .catch(() => {});
+  }, [apiUrl, apiKey]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -41,13 +79,10 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
   }, []);
 
   useEffect(() => {
-    const load = () =>
-      fetch(`${apiUrl}/topology`, { headers: { 'X-API-Key': apiKey } })
-        .then(r => r.json()).then(d => setAllData(d)).catch(() => {});
-    load();
-    const iv = setInterval(load, 5000);
+    loadTopology();
+    const iv = setInterval(loadTopology, 5000);
     return () => clearInterval(iv);
-  }, [apiUrl, apiKey]);
+  }, [loadTopology]);
 
 
   // Force re-render for animations
@@ -265,9 +300,42 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
   return (
     <div ref={containerRef} className="graph-container">
       <div className="graph-hud">
-        <div className="graph-hud-title">
-          <span className={`graph-hud-dot ${flowCount > 0 ? 'active' : ''}`} />
-          Network Topology
+        <div className="graph-hud-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <span className={`graph-hud-dot ${flowCount > 0 ? 'active' : ''}`} />
+            Network Topology
+          </div>
+          <button
+            onClick={handleToggleKafka}
+            style={{
+              background: kafkaEnabled ? 'rgba(249, 115, 22, 0.2)' : 'rgba(255,255,255,0.03)',
+              border: kafkaEnabled ? '1px solid #f97316' : '1px solid rgba(255,255,255,0.1)',
+              color: kafkaEnabled ? '#fb923c' : '#94a3b8',
+              borderRadius: '4px',
+              padding: '4px 8px',
+              fontSize: '11px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              fontWeight: '600',
+              textShadow: kafkaEnabled ? '0 0 8px rgba(249, 115, 22, 0.4)' : 'none',
+              boxShadow: kafkaEnabled ? '0 0 10px rgba(249, 115, 22, 0.15)' : 'none',
+              transition: 'all 0.3s ease-in-out',
+              userSelect: 'none'
+            }}
+          >
+            <span style={{ 
+              display: 'inline-block',
+              width: '6px',
+              height: '6px',
+              borderRadius: '50%',
+              background: kafkaEnabled ? '#f97316' : '#475569',
+              boxShadow: kafkaEnabled ? '0 0 8px #f97316' : 'none',
+              transition: 'all 0.3s ease-in-out'
+            }} />
+            {kafkaEnabled ? 'Kafka Stream: ACTIVE' : 'Kafka Stream: INACTIVE'}
+          </button>
         </div>
         <div className="graph-hud-stats">
           <div className="graph-hud-stat">

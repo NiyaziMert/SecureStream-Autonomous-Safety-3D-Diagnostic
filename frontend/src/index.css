@@ -175,8 +175,9 @@ html, body, #root {
 .status-pill {
   position: fixed;
   top: 20px;
-  right: 240px;
-  z-index: 50;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 99;
 }
 
 .ws-indicator {

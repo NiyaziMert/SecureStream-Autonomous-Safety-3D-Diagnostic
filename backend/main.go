@@ -24,6 +24,7 @@ import (
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 )
 
 // ---------------------------------------------------------
@@ -140,8 +141,12 @@ type UptimeStatus struct {
 }
 
 var (
-	uptimeData   = make(map[string]*UptimeStatus)
-	uptimeDataMu sync.RWMutex
+	uptimeData         = make(map[string]*UptimeStatus)
+	uptimeDataMu       sync.RWMutex
+	kafkaStreamEnabled = false
+	kafkaMu            sync.Mutex
+	kafkaWriter        *kafka.Writer
+	kafkaAddr          = "kafka:9092"
 )
 
 // FlowEvent: Gerçek zamanlı veri akışı olayı
@@ -604,6 +609,202 @@ func uptimeMonitor() {
 }
 
 // ---------------------------------------------------------
+// APACHE KAFKA INTEGRATION (Gerçek Veri Akışı ve Mesajlaşma)
+// ---------------------------------------------------------
+
+type KafkaLogEvent struct {
+	MsgType   string    `json:"msg_type"` // "log"
+	Source    string    `json:"source"`   // "kafka"
+	RawLog    string    `json:"raw_log"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+func initKafka() {
+	addr := os.Getenv("KAFKA_BROKERS")
+	if addr != "" {
+		kafkaAddr = addr
+	}
+	fmt.Printf("📡 Connecting to Real Apache Kafka Broker at: %s...\n", kafkaAddr)
+
+	// Kafka Writer
+	kafkaWriter = &kafka.Writer{
+		Addr:     kafka.TCP(kafkaAddr),
+		Balancer: &kafka.LeastBytes{},
+		Async:    true,
+	}
+
+	// Gerçek Kafka Tüketici (Consumer) döngülerini her başlık için arka planda başlat
+	go startRealKafkaConsumer("log-ingest")
+	go startRealKafkaConsumer("metrics-pipeline")
+	go startRealKafkaConsumer("threat-alerts")
+	go startRealKafkaConsumer("telemetry-data")
+}
+
+func publishToKafka(topic string, key string, value []byte) {
+	if kafkaWriter == nil {
+		return
+	}
+	err := kafkaWriter.WriteMessages(context.Background(), kafka.Message{
+		Topic: topic,
+		Key:   []byte(key),
+		Value: value,
+	})
+	if err != nil {
+		fmt.Printf("⚠️  Kafka Publish Hatası (Topic: %s): %v\n", topic, err)
+	}
+}
+
+func startRealKafkaConsumer(topic string) {
+	fmt.Printf("📥 [%s] Gerçek Kafka Consumer başlatıldı...\n", topic)
+	
+	// Bağlantı kopmalarına karşı otomatik retry yapısı kuruyoruz
+	var reader *kafka.Reader
+	defer func() {
+		if reader != nil {
+			reader.Close()
+		}
+	}()
+
+	for {
+		if reader == nil {
+			reader = kafka.NewReader(kafka.ReaderConfig{
+				Brokers:  []string{kafkaAddr},
+				Topic:    topic,
+				GroupID:  "securestream-consumer-group",
+				MaxBytes: 10e6, // 10MB
+			})
+		}
+
+		m, err := reader.ReadMessage(context.Background())
+		if err != nil {
+			fmt.Printf("⚠️  Kafka Okuma Hatası (%s): %v. 3 saniye sonra yeniden bağlanılıyor...\n", topic, err)
+			reader.Close()
+			reader = nil
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		// Aktif tenant bul (WebSocket yayını için)
+		tenantID := "default"
+		clientsMu.Lock()
+		for tid := range clients {
+			tenantID = tid
+			break
+		}
+		clientsMu.Unlock()
+
+		// Mesaj detaylarını hazırla
+		var logMsg string
+		var producerNode = string(m.Key)
+		if producerNode == "" {
+			producerNode = "backend"
+		}
+
+		if topic == "log-ingest" {
+			var entry LogEntry
+			if err := json.Unmarshal(m.Value, &entry); err == nil {
+				// Ham log metnini normal işleme pipeline'ına gönder
+				select {
+				case logQueue <- entry:
+				default:
+				}
+				logMsg = fmt.Sprintf("📬 [KAFKA Broker] Topic: \"%s\" | Partition: %d | Offset: %d | Log: %s", 
+					topic, m.Partition, m.Offset, entry.RawLog)
+			} else {
+				logMsg = fmt.Sprintf("📬 [KAFKA Broker] Topic: \"%s\" | Partition: %d | Offset: %d | Payload: %s", 
+					topic, m.Partition, m.Offset, string(m.Value))
+			}
+		} else {
+			logMsg = fmt.Sprintf("📬 [KAFKA Broker] Topic: \"%s\" | Partition: %d | Offset: %d | Producer: \"%s\" | Payload: %s", 
+				topic, m.Partition, m.Offset, producerNode, string(m.Value))
+		}
+
+		// 1. Görsel Akış: Producer -> Kafka Broker
+		select {
+		case flowQueue <- FlowEvent{
+			MsgType:  "flow",
+			TenantID: tenantID,
+			Source:   producerNode,
+			Target:   "kafka",
+		}:
+		default:
+		}
+
+		// 2. Görsel Akış: Kafka Broker -> Consumer Node (Veritabanı veya İşleyici)
+		var consumerNode = "backend"
+		if topic == "telemetry-data" {
+			consumerNode = "redis"
+		} else if topic == "threat-alerts" {
+			consumerNode = "postgres"
+		}
+		select {
+		case flowQueue <- FlowEvent{
+			MsgType:  "flow",
+			TenantID: tenantID,
+			Source:   "kafka",
+			Target:   consumerNode,
+		}:
+		default:
+		}
+
+		// WebSocket ile canlı logu yayınla
+		logEv := KafkaLogEvent{
+			MsgType:   "log",
+			Source:    "kafka",
+			RawLog:    logMsg,
+			Timestamp: time.Now(),
+		}
+		broadcastToTenant(tenantID, logEv)
+	}
+}
+
+// startKafkaBrokerSimulator: UI'da buton açıldığında gerçek Kafka'ya yüksek hızlı trafik yazan üretici döngüsü
+func startKafkaBrokerSimulator() {
+	topics := []string{"metrics-pipeline", "threat-alerts", "telemetry-data"}
+	payloads := []string{
+		`{"event":"metric_sync","cpu_avg":42.5,"memory_mb":512}`,
+		`{"event":"ip_scan_complete","threats_found":0}`,
+		`{"event":"db_checkpoint","rows_updated":234}`,
+	}
+
+	for {
+		time.Sleep(time.Duration(rand.Intn(700)+350) * time.Millisecond) // Yüksek hızlı canlı Kafka akışı
+
+		kafkaMu.Lock()
+		active := kafkaStreamEnabled
+		kafkaMu.Unlock()
+
+		if !active {
+			continue
+		}
+
+		topologyMu.Lock()
+		nodes := currentTopology.Nodes
+		topologyMu.Unlock()
+
+		if len(nodes) == 0 {
+			continue
+		}
+
+		// Producer düğümünü seç
+		var producer = "backend"
+		if len(nodes) > 1 {
+			pIdx := rand.Intn(len(nodes))
+			producer = nodes[pIdx].ID
+			if producer == "kafka" {
+				producer = "backend"
+			}
+		}
+
+		// Gerçek Kafka Broker'a yaz!
+		topic := topics[rand.Intn(len(topics))]
+		payload := payloads[rand.Intn(len(payloads))]
+		
+		publishToKafka(topic, producer, []byte(payload))
+	}
+}
+
+// ---------------------------------------------------------
 // DATABASE BAĞLANTISI
 // ---------------------------------------------------------
 
@@ -1021,6 +1222,7 @@ func main() {
 	// DB ve Redis bağlantıları
 	initDB()
 	initRedis()
+	initKafka()
 
 	r := gin.Default()
 
@@ -1048,6 +1250,9 @@ func main() {
 
 	// Uptime monitor başlat
 	go uptimeMonitor()
+
+	// Kafka Broker simülatörünü başlat
+	go startKafkaBrokerSimulator()
 
 	// -------------------------------------------------------
 	// PUBLIC ENDPOINTS
@@ -1212,7 +1417,96 @@ func main() {
 		if topo.Links == nil {
 			topo.Links = []TopologyLink{}
 		}
+
+		kafkaMu.Lock()
+		active := kafkaStreamEnabled
+		kafkaMu.Unlock()
+
+		if active {
+			hasKafka := false
+			for i, n := range topo.Nodes {
+				if n.ID == "kafka" {
+					topo.Nodes[i].Name = "Apache Kafka Cluster"
+					topo.Nodes[i].Tech = "Apache Kafka"
+					topo.Nodes[i].NodeType = "message-broker"
+					topo.Nodes[i].Color = "#f97316" // Premium Kafka Turuncusu
+					topo.Nodes[i].Val = 8
+					topo.Nodes[i].Group = 3
+					hasKafka = true
+					break
+				}
+			}
+			if !hasKafka {
+				topo.Nodes = append(topo.Nodes, TopologyNode{
+					ID:        "kafka",
+					Name:      "Apache Kafka Cluster",
+					Tech:      "Apache Kafka",
+					NodeType:  "message-broker",
+					Color:     "#f97316", // Kafka Turuncusu
+					Val:       8,
+					Group:     3,
+				})
+			}
+
+			// Aktif servisleri Kafka'ya Pub/Sub olarak bağlayan linkleri HER DURUMDA ekle!
+			for _, n := range topo.Nodes {
+				if n.ID == "kafka" || n.NodeType == "function" {
+					continue
+				}
+				// docker-compose.yml parse hatalarından sızan sahte parametre düğümlerini bağlamıyoruz
+				if n.ID == "depends_on" || n.ID == "environment" || n.ID == "volumes" || n.ID == "aliases" || n.ID == "healthcheck" || n.ID == "networks" || n.ID == "ports" || n.ID == "build" || n.ID == "default" {
+					continue
+				}
+
+				topo.Links = append(topo.Links, TopologyLink{
+					Source: n.ID,
+					Target: "kafka",
+					Val:    2,
+					Label:  "Publish",
+				})
+				topo.Links = append(topo.Links, TopologyLink{
+					Source: "kafka",
+					Target: n.ID,
+					Val:    2,
+					Label:  "Subscribe",
+				})
+			}
+		}
 		c.JSON(http.StatusOK, topo)
+	})
+
+	// Kafka Status API
+	api.GET("/kafka/status", func(c *gin.Context) {
+		kafkaMu.Lock()
+		active := kafkaStreamEnabled
+		kafkaMu.Unlock()
+		
+		status := "disabled"
+		if active {
+			status = "enabled"
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "success", "kafka_stream": status})
+	})
+
+	// Kafka Toggle API
+	api.POST("/kafka/toggle", func(c *gin.Context) {
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		
+		kafkaMu.Lock()
+		kafkaStreamEnabled = req.Enabled
+		kafkaMu.Unlock()
+		
+		status := "disabled"
+		if req.Enabled {
+			status = "enabled"
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "success", "kafka_stream": status})
 	})
 
 	// Topolojiyi güncelleme endpoint'i
@@ -1432,12 +1726,13 @@ func main() {
 			}
 		}
 
-		// Worker pool'a gönder (non-blocking)
-		select {
-		case logQueue <- entry:
-			c.JSON(http.StatusAccepted, gin.H{"status": "queued"})
-		default:
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Kuyruk dolu, lütfen bekleyin"})
+		// Real Apache Kafka Broker'a publish et! (Veri akışı gerçek kuyruğa gider)
+		entryBytes, err := json.Marshal(entry)
+		if err == nil {
+			publishToKafka("log-ingest", entry.Source, entryBytes)
+			c.JSON(http.StatusAccepted, gin.H{"status": "published_to_kafka"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "JSON serialize hatası"})
 		}
 	})
 
