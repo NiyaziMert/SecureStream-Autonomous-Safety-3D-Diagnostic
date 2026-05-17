@@ -616,6 +616,69 @@ func initDB() {
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	fmt.Println("✅ PostgreSQL bağlantısı kuruldu.")
+
+	// Otomatik Tablo Oluşturma (Database Auto-Migrations)
+	fmt.Println("🔄 Veritabanı tabloları kontrol ediliyor/oluşturuluyor...")
+	schema := `
+	CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+	CREATE TABLE IF NOT EXISTS tenants (
+		id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		name        VARCHAR(255) NOT NULL,
+		email       VARCHAR(255) NOT NULL UNIQUE,
+		api_key     VARCHAR(64)  NOT NULL UNIQUE, -- SHA-256 hash
+		plan        VARCHAR(50)  NOT NULL DEFAULT 'free',
+		is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
+		created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+		updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+	);
+
+	CREATE TABLE IF NOT EXISTS log_entries (
+		id          BIGSERIAL    PRIMARY KEY,
+		tenant_id   UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		source      VARCHAR(100) NOT NULL,
+		raw_log     TEXT         NOT NULL,
+		source_ip   INET,
+		username    VARCHAR(255),
+		created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_log_entries_tenant ON log_entries(tenant_id, created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_log_entries_ip ON log_entries(source_ip);
+
+	CREATE TABLE IF NOT EXISTS alerts (
+		id          BIGSERIAL    PRIMARY KEY,
+		tenant_id   UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		alert_type  VARCHAR(100) NOT NULL,
+		severity    VARCHAR(20)  NOT NULL,
+		source_ip   INET,
+		username    VARCHAR(255),
+		message     TEXT         NOT NULL,
+		raw_log     TEXT,
+		acknowledged BOOLEAN     NOT NULL DEFAULT FALSE,
+		created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_alerts_tenant ON alerts(tenant_id, created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(tenant_id, severity);
+	CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(tenant_id, alert_type);
+
+	-- Demo API Anahtarı "dev-api-key-12345" SHA-256 hash'i ile tohumlanıyor
+	INSERT INTO tenants (id, name, email, api_key, plan)
+	VALUES (
+		'00000000-0000-0000-0000-000000000001',
+		'Demo Şirketi A.Ş.',
+		'demo@securestream.dev',
+		'8264dc9f07e749d9c2ffead0b25de8cb22bed7af774e189ef224ae015908776b',
+		'pro'
+	) ON CONFLICT DO NOTHING;
+	`
+	_, err = db.Exec(schema)
+	if err != nil {
+		fmt.Printf("⚠️  Otomatik veritabanı kurulumu başarısız oldu: %v\n", err)
+	} else {
+		fmt.Println("✅ Veritabanı tabloları ve demo API anahtarı başarıyla kuruldu.")
+	}
 }
 
 // ---------------------------------------------------------
@@ -996,6 +1059,86 @@ func main() {
 			"db":        dbOK,
 			"redis":     redisOK,
 			"timestamp": time.Now().UTC(),
+		})
+	})
+
+	// -------------------------------------------------------
+	// AWS MARKETPLACE REGISTER & RESOLUTION ENDPOINT
+	// -------------------------------------------------------
+	// AWS Marketplace müşterileri satın alımdan sonra bu endpoint'e yönlendirilir.
+	// Örn: GET /register?token=x-amzn-marketplace-token
+	r.GET("/register", func(c *gin.Context) {
+		token := c.Query("token")
+		if token == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing registration token"})
+			return
+		}
+
+		// Akıllı Mock Modu Tespiti:
+		// Ortamda AWS kimlik bilgileri tanımlı değilse veya gelen token "siber_"/"mock_" ile başlıyorsa Mock modu çalıştır.
+		hasAWSCreds := os.Getenv("AWS_ACCESS_KEY_ID") != "" || 
+		               os.Getenv("AWS_ROLE_ARN") != "" || 
+		               os.Getenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") != ""
+		
+		isMockToken := strings.HasPrefix(token, "siber_") || strings.HasPrefix(token, "mock_")
+
+		if !hasAWSCreds || isMockToken {
+			fmt.Println("ℹ️  [AWS Billing Mock] AWS credentials not found or Mock Token detected. Bypassing real AWS API Call.")
+			
+			// Mock modda yeni bir B2B Tenant kaydı oluşturur
+			newTenantKey := "sk_live_" + strings.ToLower(token[:12])
+			hashedKey := hashAPIKey(newTenantKey)
+			
+			// Tenant tablosuna doğrudan SHA-256 hash'li API anahtarı ile kaydet (ID otomatik üretilir)
+			_, err := db.Exec("INSERT INTO tenants (name, email, api_key, plan) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING", 
+				"AWS Marketplace Customer (Mock)", "aws-client-" + token[:8] + "@securestream.ai", hashedKey, "enterprise")
+			if err != nil {
+				fmt.Printf("⚠️  [AWS Billing Mock] Failed to insert mock tenant: %v\n", err)
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"status": "success",
+				"mode": "MOCK",
+				"message": "AWS Marketplace Mock Customer resolved successfully",
+				"customer_id": "mock-customer-" + token[:8],
+				"api_key": newTenantKey,
+			})
+			return
+		}
+
+		awsClient, err := NewAWSMarketplaceClient()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("AWS SDK Client Init failed: %v", err)})
+			return
+		}
+
+		// Gerçek AWS API Call
+		customerID, productCode, err := awsClient.ResolveCustomer(token)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("AWS Token Resolution failed: %v", err)})
+			return
+		}
+
+		// Yeni tenant oluştur ve veritabanına ekle
+		newTenantKey := "sk_live_" + strings.ToLower(customerID[:12])
+		hashedKey := hashAPIKey(newTenantKey)
+
+		_, err = db.Exec("INSERT INTO tenants (name, email, api_key, plan) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING", 
+			"AWS Marketplace (" + productCode + ")", "aws-client-" + customerID[:8] + "@securestream.ai", hashedKey, "enterprise")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create tenant"})
+			return
+		}
+
+		// Saatlik otomatik fatura bildirme worker'ını arka planda başlat
+		StartAWSUsageReporting(awsClient, productCode)
+
+		c.JSON(http.StatusOK, gin.H{
+			"status": "success",
+			"mode": "PRODUCTION",
+			"message": "AWS Marketplace Customer registered successfully",
+			"customer_id": customerID,
+			"api_key": newTenantKey,
 		})
 	})
 

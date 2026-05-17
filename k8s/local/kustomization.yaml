@@ -13,6 +13,9 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/image
         value: securestream-backend:local
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
   - target:
       kind: Deployment
       name: frontend
@@ -20,6 +23,19 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/image
         value: securestream-frontend:local
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+  - target:
+      kind: Deployment
+      name: simulator
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: securestream-simulator:local
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
 
   # Change Services to LoadBalancer for local access
   - target:
@@ -36,6 +52,19 @@ patches:
       - op: replace
         path: /spec/type
         value: LoadBalancer
+      - op: replace
+        path: /spec/ports/0/port
+        value: 5173
+  - target:
+      kind: Ingress
+      name: securestream-ingress
+    patch: |-
+      - op: add
+        path: /spec/ingressClassName
+        value: traefik
+      - op: replace
+        path: /metadata/annotations/kubernetes.io~1ingress.class
+        value: traefik
 
 # Remove Ingress for local (since we use LoadBalancer services)
 # Or keep it if you have an ingress controller installed
