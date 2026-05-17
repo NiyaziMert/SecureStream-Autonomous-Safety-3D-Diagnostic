@@ -380,7 +380,7 @@ html, body, #root {
   top: 0;
   right: 0;
   bottom: 0;
-  z-index: 40;
+  z-index: 105;
   width: 420px;
   max-width: 90vw;
   background: rgba(5,10,22,0.94);
@@ -488,6 +488,44 @@ html, body, #root {
 .alert-severity-badge.medium { background: rgba(234,179,8,0.15); color: var(--yellow); border: 1px solid rgba(234,179,8,0.3); }
 .alert-severity-badge.low { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
 .alert-type-tag { font-size: 9px; color: var(--text-muted); background: rgba(255,255,255,0.05); padding: 1px 6px; border-radius: 3px; }
+
+/* ── DISCOVERY ── */
+.discovery-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.discovery-input:focus { border-color: var(--accent-blue); }
+
+.discovery-btn {
+  background: var(--accent-blue);
+  color: white;
+  border: none;
+  padding: 12px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.discovery-btn:hover:not(:disabled) { opacity: 0.9; }
+.discovery-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.discovery-btn.loading { animation: pulse 1.5s infinite; }
+
+.discovery-result {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.discovery-result.success { background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); color: var(--green); }
+.discovery-result.error { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: var(--red); }
 
 /* ── UPTIME ── */
 .uptime-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; font-size: 12px; }

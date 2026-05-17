@@ -95,6 +95,132 @@ function ControlPanel({ actions }) {
   )
 }
 
+function DiscoveryPanel() {
+  const [dirs, setDirs] = useState('/Users/niyazimertisiksal/Concurrent-Log-Streamer');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [codeOnly, setCodeOnly] = useState(false);
+
+  const handleScan = async () => {
+    setLoading(true);
+    setResult(null);
+    try {
+      const dirArray = dirs.split(',').map(d => d.trim()).filter(d => d);
+      const res = await fetch(`${API_URL}/discover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+        body: JSON.stringify({ dirs: dirArray, code_only: codeOnly })
+      });
+      const data = await res.json();
+      setResult(data);
+    } catch (err) {
+      setResult({ error: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="overlay-panel">
+      <div className="overlay-panel-title">Auto-Discovery Agent</div>
+      <div style={{ padding: '10px 0', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div>
+          <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+            Target Directories (comma separated)
+          </label>
+          <input 
+            type="text" 
+            value={dirs} 
+            onChange={e => setDirs(e.target.value)}
+            className="discovery-input"
+            placeholder="/path/to/project1, /path/to/project2"
+          />
+          <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Quick Select:</span>
+            <button 
+              type="button"
+              onClick={() => setDirs('/Users/niyazimertisiksal/Concurrent-Log-Streamer')}
+              style={{
+                fontSize: '11px',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                border: '1px solid ' + (dirs === '/Users/niyazimertisiksal/Concurrent-Log-Streamer' ? 'var(--primary)' : 'rgba(255,255,255,0.1)'),
+                background: dirs === '/Users/niyazimertisiksal/Concurrent-Log-Streamer' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255,255,255,0.03)',
+                color: dirs === '/Users/niyazimertisiksal/Concurrent-Log-Streamer' ? '#60a5fa' : 'var(--text-secondary)',
+                cursor: 'pointer',
+                transition: 'all 0.2s'
+              }}
+            >
+              Local macOS Path
+            </button>
+            <button 
+              type="button"
+              onClick={() => setDirs('/host-project')}
+              style={{
+                fontSize: '11px',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                border: '1px solid ' + (dirs === '/host-project' ? 'var(--primary)' : 'rgba(255,255,255,0.1)'),
+                background: dirs === '/host-project' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255,255,255,0.03)',
+                color: dirs === '/host-project' ? '#60a5fa' : 'var(--text-secondary)',
+                cursor: 'pointer',
+                transition: 'all 0.2s'
+              }}
+            >
+              Docker Volume Path
+            </button>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '14px' }}>
+            <input
+              type="checkbox"
+              id="codeOnlyMode"
+              checked={codeOnly}
+              onChange={e => setCodeOnly(e.target.checked)}
+              style={{
+                accentColor: 'var(--primary)',
+                cursor: 'pointer',
+                width: '15px',
+                height: '15px'
+              }}
+            />
+            <label 
+              htmlFor="codeOnlyMode" 
+              style={{ 
+                fontSize: '12px', 
+                color: 'var(--text-secondary)', 
+                cursor: 'pointer',
+                userSelect: 'none'
+              }}
+            >
+              Pure Code Analysis Mode (Ignore Docker Containers)
+            </label>
+          </div>
+        </div>
+        <button 
+          onClick={handleScan} 
+          disabled={loading || !dirs}
+          className={`discovery-btn ${loading ? 'loading' : ''}`}
+        >
+          {loading ? 'Scanning & Building Topology...' : 'Run Discovery Scan'}
+        </button>
+        
+        {result && (
+          <div className={`discovery-result ${result.error ? 'error' : 'success'}`}>
+            {result.error ? (
+              <div><strong>Error:</strong> {result.error}</div>
+            ) : (
+              <div>
+                <strong>Scan Complete!</strong>
+                <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>{result.message}</div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function LogPanel({ logs }) {
   const ref = useRef(null)
   useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight }, [logs])
@@ -159,11 +285,12 @@ const icons = {
   stats: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>,
   uptime: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
   firewall: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+  discovery: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/><path d="M16 12h-4"/></svg>,
 }
 
 /* ── MAIN APP ── */
 export default function App() {
-  const [menuOpen, setMenuOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(true)
   const [page, setPage] = useState('topology')
   const [logs, setLogs] = useState([])
   const [alerts, setAlerts] = useState([])
@@ -248,6 +375,7 @@ export default function App() {
     { id: 'alerts', label: 'Alerts', icon: icons.alerts, badge: critCount, group: 'Monitoring' },
     { id: 'logs', label: 'Live Logs', icon: icons.logs, group: 'Monitoring' },
     { id: 'stats', label: 'Statistics', icon: icons.stats, group: 'Monitoring' },
+    { id: 'discovery', label: 'Auto-Discovery', icon: icons.discovery, group: 'Configuration' },
     { id: 'uptime', label: 'Uptime Monitor', icon: icons.uptime, group: 'System' },
     { id: 'control', label: 'Firewall Control', icon: icons.firewall, group: 'System' },
   ]
@@ -333,6 +461,7 @@ export default function App() {
               {page === 'alerts' && 'Alert Center'}
               {page === 'logs' && 'Live Log Stream'}
               {page === 'stats' && 'Statistics & Analytics'}
+              {page === 'discovery' && 'Topology Discovery'}
               {page === 'uptime' && 'Uptime Monitor'}
               {page === 'control' && 'Firewall Control'}
             </span>
@@ -341,6 +470,7 @@ export default function App() {
           {page === 'alerts' && <AlertsPanel alerts={alerts} />}
           {page === 'logs' && <LogPanel logs={logs} />}
           {page === 'stats' && <StatsPanel stats={stats} alerts={alerts} />}
+          {page === 'discovery' && <DiscoveryPanel />}
           {page === 'uptime' && <UptimePanel data={uptimeData} />}
           {page === 'control' && <ControlPanel actions={sysActions} />}
         </div>

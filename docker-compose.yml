@@ -31,7 +31,9 @@ services:
       retries: 5
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
     container_name: securestream_backend
     ports:
       - "8080:8080"
@@ -47,6 +49,9 @@ services:
     environment:
       - DB_HOST=postgres
       - REDIS_HOST=redis
+    volumes:
+      - .:/host-project # Discovery agent'ın dışarıdaki kodu görebilmesi için
+      - /Users/niyazimertisiksal:/Users/niyazimertisiksal # Mac kullanıcısının tüm projelerine erişebilmesi için
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
       interval: 5s
@@ -62,17 +67,6 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    restart: unless-stopped
-
-  simulator:
-    build: ./client-simulator
-    container_name: securestream_simulator
-    depends_on:
-      backend:
-        condition: service_healthy
-    environment:
-      - BACKEND_URL=http://backend:8080/api
-      - HEALTH_URL=http://backend:8080/health
     restart: unless-stopped
 
 volumes:

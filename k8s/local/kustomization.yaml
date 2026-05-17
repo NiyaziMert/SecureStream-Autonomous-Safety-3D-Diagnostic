@@ -26,16 +26,6 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/imagePullPolicy
         value: Never
-  - target:
-      kind: Deployment
-      name: simulator
-    patch: |-
-      - op: replace
-        path: /spec/template/spec/containers/0/image
-        value: securestream-simulator:local
-      - op: replace
-        path: /spec/template/spec/containers/0/imagePullPolicy
-        value: Never
 
   # Change Services to LoadBalancer for local access
   - target:

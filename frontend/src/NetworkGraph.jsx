@@ -75,14 +75,16 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
   }, [activeLinkSet]);
 
   const visibleData = useMemo(() => {
-    const vis = allData.nodes.filter(n => !n.parent || expandedNodes.has(n.parent));
+    const nodes = allData?.nodes || [];
+    const links = allData?.links || [];
+    const vis = nodes.filter(n => !n.parent || expandedNodes.has(n.parent));
     const ids = new Set(vis.map(n => n.id));
-    const links = allData.links.filter(l => {
+    const visLinks = links.filter(l => {
       const s = typeof l.source === 'object' ? l.source.id : l.source;
       const t = typeof l.target === 'object' ? l.target.id : l.target;
       return ids.has(s) && ids.has(t);
     });
-    return { nodes: vis, links };
+    return { nodes: vis, links: visLinks };
   }, [allData, expandedNodes]);
 
   // Configure d3 forces for better spacing
@@ -96,12 +98,13 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
   }, [visibleData]);
 
   const handleClick = useCallback(node => {
-    const hasKids = allData.nodes.some(n => n.parent === node.id);
+    const nodes = allData?.nodes || [];
+    const hasKids = nodes.some(n => n.parent === node.id);
     if (hasKids) {
       setExpandedNodes(prev => {
         const next = new Set(prev);
         if (next.has(node.id)) {
-          const collapse = id => { next.delete(id); allData.nodes.filter(n => n.parent === id).forEach(c => collapse(c.id)); };
+          const collapse = id => { next.delete(id); nodes.filter(n => n.parent === id).forEach(c => collapse(c.id)); };
           collapse(node.id);
         } else next.add(node.id);
         return next;
@@ -132,20 +135,31 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
     const isHov = hoveredNode === node.id;
     const isSel = selectedNode === node.id;
     const isAct = activeNodeSet.has(node.id);
-    const hasKids = allData.nodes.some(n => n.parent === node.id);
+    const nodes = allData?.nodes || [];
+    const hasKids = nodes.some(n => n.parent === node.id);
     const isExp = expandedNodes.has(node.id);
     const baseR = Math.sqrt(node.val || 4) * 2.5;
     const r = baseR * (isHov ? 1.3 : isSel ? 1.2 : 1);
 
     // Outer glow
     if (isAct || isSel) {
-      const t = Date.now() * 0.003;
-      const pulseR = r + 6 + Math.sin(t) * 3;
+      const t = Date.now() * 0.005;
+      const pulseR = r + 8 + Math.sin(t) * 4;
       const grad = ctx.createRadialGradient(x, y, r, x, y, pulseR);
-      grad.addColorStop(0, color + '40');
+      grad.addColorStop(0, color + '50');
       grad.addColorStop(1, color + '00');
       ctx.beginPath(); ctx.arc(x, y, pulseR, 0, Math.PI * 2);
       ctx.fillStyle = grad; ctx.fill();
+
+      // Dynamic energy ripple ring that spreads outward
+      const rippleR = r + 15 + ((Date.now() * 0.015) % 25);
+      const alpha = Math.max(0, 1 - (rippleR - r) / 25) * 0.4;
+      ctx.beginPath(); ctx.arc(x, y, rippleR, 0, Math.PI * 2);
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.globalAlpha = 1.0; // reset
     }
 
     // Main circle
@@ -185,20 +199,43 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
     if (!Number.isFinite(sx) || !Number.isFinite(sy) || !Number.isFinite(tx) || !Number.isFinite(ty)) return;
 
     const active = isActive(link);
-    // Line
-    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty);
-    ctx.strokeStyle = active ? '#22d3ee88' : 'rgba(80,100,160,0.12)';
-    ctx.lineWidth = active ? 2 : 0.4;
-    ctx.stroke();
+    if (!active) {
+      // Inactive/Standard links: subtle, sleek line
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty);
+      ctx.strokeStyle = 'rgba(100, 116, 139, 0.35)';
+      ctx.lineWidth = 1.0;
+      ctx.stroke();
+    } else {
+      // Active links: Premium neon glowing laser line
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty);
+      ctx.strokeStyle = '#22d3ee';
+      ctx.lineWidth = 3.0;
+      ctx.shadowColor = '#06b6d4';
+      ctx.shadowBlur = 12;
+      ctx.stroke();
+      ctx.shadowBlur = 0; // reset shadow immediately to avoid performance cost
 
-    // Animated particles
-    if (active) {
-      const t = (Date.now() % 2000) / 2000;
-      for (let i = 0; i < 3; i++) {
-        const p = (t + i / 3) % 1;
+      // Glowing core inner light line
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.0;
+      ctx.stroke();
+
+      // Energetic flowing traveling particles (energy pulses) with glow
+      const t = (Date.now() % 1200) / 1200; // Faster transmission flow
+      const numParticles = 4;
+      for (let i = 0; i < numParticles; i++) {
+        const p = (t + i / numParticles) % 1;
+        const px = sx + (tx - sx) * p;
+        const py = sy + (ty - sy) * p;
+
         ctx.beginPath();
-        ctx.arc(sx + (tx - sx) * p, sy + (ty - sy) * p, 2, 0, Math.PI * 2);
-        ctx.fillStyle = '#4ade80'; ctx.fill();
+        ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#4ade80';
+        ctx.shadowColor = '#4ade80';
+        ctx.shadowBlur = 8;
+        ctx.fill();
+        ctx.shadowBlur = 0; // reset
       }
     }
 
@@ -211,11 +248,11 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       const tw = ctx.measureText(label).width;
       // Background
-      ctx.fillStyle = active ? 'rgba(5,20,40,0.85)' : 'rgba(5,10,20,0.7)';
+      ctx.fillStyle = active ? 'rgba(5,20,40,0.85)' : 'rgba(15,23,42,0.8)';
       drawRoundRect(ctx, mx - tw / 2 - 2, my - fontSize / 2 - 1.5, tw + 4, fontSize + 3, 2);
       ctx.fill();
       // Text
-      ctx.fillStyle = active ? '#22d3ee' : '#64748b';
+      ctx.fillStyle = active ? '#22d3ee' : '#94a3b8';
       ctx.fillText(label, mx, my);
     }
   }, [isActive]);

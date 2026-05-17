@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -151,64 +152,74 @@ type FlowEvent struct {
 	Target   string `json:"target"`
 }
 
-// flowMap: Log kaynağını topoloji bağlantılarına eşleyen harita
-var flowMap = map[string][][2]string{
-	"internet":             {{"internet", "waf"}, {"internet", "dns"}, {"internet", "cdn"}},
-	"dns":                  {{"internet", "dns"}, {"dns", "waf"}},
-	"cdn":                  {{"internet", "cdn"}, {"cdn", "s3_storage"}},
-	"waf":                  {{"internet", "waf"}, {"waf", "nginx"}},
-	"nginx":                {{"waf", "nginx"}, {"nginx", "api_gateway"}},
-	"api_gateway":          {{"nginx", "api_gateway"}, {"api_gateway", "auth_service"}},
-	"auth_service":         {{"api_gateway", "auth_service"}, {"auth_service", "db_master"}, {"auth_service", "redis"}},
-	"user_service":         {{"api_gateway", "user_service"}, {"user_service", "db_master"}},
-	"product_service":      {{"api_gateway", "product_service"}, {"product_service", "redis"}, {"product_service", "db_replica"}},
-	"order_service":        {{"api_gateway", "order_service"}, {"order_service", "db_master"}, {"order_service", "kafka"}},
-	"payment_service":      {{"api_gateway", "payment_service"}, {"payment_service", "pay_fraud"}, {"payment_service", "kafka"}},
-	"notification_service": {{"notification_service", "kafka"}, {"notification_service", "redis"}},
-	"analytics_service":    {{"api_gateway", "analytics_service"}, {"analytics_service", "elasticsearch"}, {"analytics_service", "kafka"}},
-	"logging_service":      {{"logging_service", "elasticsearch"}, {"logging_service", "kafka"}},
-	"pay_stripe":           {{"payment_service", "pay_stripe"}, {"pay_stripe", "db_master"}},
-	"pay_paypal":           {{"payment_service", "pay_paypal"}, {"pay_paypal", "db_master"}},
-	"pay_fraud":            {{"payment_service", "pay_fraud"}, {"pay_fraud", "db_master"}},
-	"pay_invoice":          {{"payment_service", "pay_invoice"}, {"pay_invoice", "db_master"}, {"pay_invoice", "s3_storage"}},
-	"auth_jwt":             {{"auth_service", "auth_jwt"}, {"auth_jwt", "redis"}},
-	"auth_oauth":           {{"auth_service", "auth_oauth"}, {"auth_oauth", "db_master"}},
-	"auth_session":         {{"auth_service", "auth_session"}, {"auth_session", "redis"}},
-	"auth_mfa":             {{"auth_service", "auth_mfa"}, {"auth_mfa", "redis"}},
-	"prod_search":          {{"product_service", "prod_search"}, {"prod_search", "elasticsearch"}},
-	"prod_inventory":       {{"product_service", "prod_inventory"}, {"prod_inventory", "db_replica"}},
-	"prod_recommend":       {{"product_service", "prod_recommend"}, {"prod_recommend", "redis"}},
-	"prod_pricing":         {{"product_service", "prod_pricing"}, {"prod_pricing", "redis"}},
-	"order_cart":           {{"order_service", "order_cart"}, {"order_cart", "redis"}},
-	"order_checkout":       {{"order_service", "order_checkout"}, {"order_checkout", "payment_service"}, {"order_checkout", "db_master"}},
-	"order_tracking":       {{"order_service", "order_tracking"}, {"order_tracking", "kafka"}},
-	"fn_stripe_validate":   {{"pay_stripe", "fn_stripe_validate"}},
-	"fn_stripe_charge":     {{"fn_stripe_validate", "fn_stripe_charge"}, {"fn_stripe_charge", "db_master"}},
-	"fn_stripe_refund":     {{"fn_stripe_validate", "fn_stripe_refund"}, {"fn_stripe_refund", "db_master"}},
-	"fn_stripe_webhook":    {{"fn_stripe_charge", "fn_stripe_webhook"}},
-	"db_master":            {{"auth_service", "db_master"}, {"db_master", "db_replica"}},
-	"db_replica":           {{"db_master", "db_replica"}},
-	"redis":                {{"product_service", "redis"}, {"auth_service", "redis"}},
-	"elasticsearch":        {{"prod_search", "elasticsearch"}, {"analytics_service", "elasticsearch"}},
-	"kafka":                {{"order_service", "kafka"}, {"payment_service", "kafka"}},
-	"s3_storage":           {{"cdn", "s3_storage"}, {"pay_invoice", "s3_storage"}},
-}
-
+// mapLogToFlows: Log kaynağını topoloji bağlantılarına eşler.
+// Artık sadece log kaynağı → backend arası gerçek akışı yansıtır.
 func mapLogToFlows(entry LogEntry) []FlowEvent {
-	pairs, ok := flowMap[entry.Source]
-	if !ok {
-		return nil
-	}
-	events := make([]FlowEvent, 0, len(pairs))
-	for _, p := range pairs {
-		events = append(events, FlowEvent{
-			MsgType:  "flow",
-			TenantID: entry.TenantID,
-			Source:   p[0],
-			Target:   p[1],
-		})
+	// Mevcut topoloji bağlantılarından gerçek flow üret
+	topologyMu.RLock()
+	links := currentTopology.Links
+	topologyMu.RUnlock()
+
+	events := make([]FlowEvent, 0)
+	for _, link := range links {
+		src := link.Source
+		dst := link.Target
+		if src == entry.Source || dst == entry.Source {
+			events = append(events, FlowEvent{
+				MsgType:  "flow",
+				TenantID: entry.TenantID,
+				Source:   src,
+				Target:   dst,
+			})
+		}
 	}
 	return events
+}
+
+// ---------------------------------------------------------
+// DINAMİK TOPOLOJİ KEŞFİ (Auto-Discovery from Data Flows)
+// ---------------------------------------------------------
+func registerDiscoveredFlow(src, dst string) {
+	topologyMu.Lock()
+	defer topologyMu.Unlock()
+
+	nodeExists := func(id string) bool {
+		for _, n := range currentTopology.Nodes {
+			if n.ID == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	linkExists := func(s, t string) bool {
+		for _, l := range currentTopology.Links {
+			if l.Source == s && l.Target == t {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !nodeExists(src) {
+		color := "#3b82f6"
+		if strings.Contains(src, "db") { color = "#8b5cf6" } else if strings.Contains(src, "redis") { color = "#ef4444" }
+		currentTopology.Nodes = append(currentTopology.Nodes, TopologyNode{
+			ID: src, Name: src, Val: 6, Group: 4, Color: color, NodeType: "auto-discovered",
+		})
+	}
+	if !nodeExists(dst) {
+		color := "#3b82f6"
+		if strings.Contains(dst, "db") { color = "#8b5cf6" } else if strings.Contains(dst, "redis") { color = "#ef4444" }
+		currentTopology.Nodes = append(currentTopology.Nodes, TopologyNode{
+			ID: dst, Name: dst, Val: 6, Group: 4, Color: color, NodeType: "auto-discovered",
+		})
+	}
+	if !linkExists(src, dst) {
+		currentTopology.Links = append(currentTopology.Links, TopologyLink{
+			Source: src, Target: dst, Val: 3, Label: "live-flow",
+		})
+	}
 }
 
 // ---------------------------------------------------------
@@ -382,6 +393,9 @@ func worker(id int, wg *sync.WaitGroup) {
 	for entry := range logQueue {
 		// Topoloji akış olaylarını gönder (non-blocking)
 		for _, flow := range mapLogToFlows(entry) {
+			// Dinamik topolojiye ekle
+			registerDiscoveredFlow(flow.Source, flow.Target)
+			
 			select {
 			case flowQueue <- flow:
 			default:
@@ -555,25 +569,21 @@ func handleMessages() {
 // UPTIME MONITOR (FAZ 4.5)
 // ---------------------------------------------------------
 func uptimeMonitor() {
-	services := []string{"Internet Gateway", "Nginx Load Balancer", "Auth Service", "Payment Service", "Database Cluster"}
-	
-	// Başlangıç verileri
-	uptimeDataMu.Lock()
-	for _, s := range services {
-		uptimeData[s] = &UptimeStatus{Service: s, Status: "up", Latency: 10, Uptime: 99.9}
-	}
-	uptimeDataMu.Unlock()
-
 	for {
 		time.Sleep(10 * time.Second)
-		
+
+		// Topolojideki gerçek node'lardan uptime verisi üret
+		topologyMu.RLock()
+		nodes := currentTopology.Nodes
+		topologyMu.RUnlock()
+
 		uptimeDataMu.Lock()
-		for _, s := range services {
-			// Rastgele latency ve nadir down olma durumu
+		for _, n := range nodes {
+			if n.NodeType == "function" {
+				continue // Fonksiyon nodlarını uptime'a ekleme
+			}
 			lat := rand.Intn(40) + 5
 			status := "up"
-			
-			// %5 şansla degraded, %1 şansla down
 			roll := rand.Intn(100)
 			if roll < 1 {
 				status = "down"
@@ -582,9 +592,12 @@ func uptimeMonitor() {
 				status = "degraded"
 				lat += 200
 			}
-			
-			uptimeData[s].Latency = lat
-			uptimeData[s].Status = status
+			if existing, ok := uptimeData[n.Name]; ok {
+				existing.Latency = lat
+				existing.Status = status
+			} else {
+				uptimeData[n.Name] = &UptimeStatus{Service: n.Name, Status: status, Latency: lat, Uptime: 99.9}
+			}
 		}
 		uptimeDataMu.Unlock()
 	}
@@ -1145,6 +1158,29 @@ func main() {
 	// -------------------------------------------------------
 	// AUTHENTICATED ENDPOINTS (API Key zorunlu)
 	// -------------------------------------------------------
+	
+	// Gerçek zamanlı API Trafik Takibi (Gerçek Veri Akışı)
+	r.Use(func(c *gin.Context) {
+		// Sadece authenticated endpointlerde tenant bilgisi olur
+		if tenant, exists := c.Get("tenant"); exists {
+			t := tenant.(*Tenant)
+			source := "internet"
+			if strings.Contains(c.Request.Referer(), "localhost") || strings.Contains(c.Request.Referer(), "3000") {
+				source = "frontend"
+			}
+			select {
+			case flowQueue <- FlowEvent{
+				MsgType:  "flow",
+				TenantID: t.ID,
+				Source:   source,
+				Target:   "backend",
+			}:
+			default:
+			}
+		}
+		c.Next()
+	})
+
 	api := r.Group("/api", authMiddleware())
 
 	// WebSocket bağlantısı — canlı alert akışı
@@ -1168,7 +1204,15 @@ func main() {
 	api.GET("/topology", func(c *gin.Context) {
 		topologyMu.RLock()
 		defer topologyMu.RUnlock()
-		c.JSON(http.StatusOK, currentTopology)
+		
+		topo := currentTopology
+		if topo.Nodes == nil {
+			topo.Nodes = []TopologyNode{}
+		}
+		if topo.Links == nil {
+			topo.Links = []TopologyLink{}
+		}
+		c.JSON(http.StatusOK, topo)
 	})
 
 	// Topolojiyi güncelleme endpoint'i
@@ -1179,8 +1223,49 @@ func main() {
 			return
 		}
 		
+		if req.Nodes == nil {
+			req.Nodes = []TopologyNode{}
+		}
+		if req.Links == nil {
+			req.Links = []TopologyLink{}
+		}
+		
 		topologyMu.Lock()
-		currentTopology = req
+		// Akıllı MERGE: Yeni taranan dizinlerin verilerini eskilerle birleştiriyoruz.
+		// Böylece birden fazla proje taranırken eski projelerin düğümleri silinmez ve
+		// projeler arası HTTP bağlantıları (link) aynı düğüm ID'leri üzerinden otomatik eşleşir.
+		mergedNodes := make(map[string]TopologyNode)
+		for _, n := range currentTopology.Nodes {
+			mergedNodes[n.ID] = n
+		}
+		for _, n := range req.Nodes {
+			// Eğer yeni düğüm zaten varsa, bilgilerini (Tech, NodeType vs.) güncelleyebiliriz
+			mergedNodes[n.ID] = n
+		}
+
+		mergedLinks := make(map[string]TopologyLink)
+		for _, l := range currentTopology.Links {
+			key := l.Source + "|||" + l.Target
+			mergedLinks[key] = l
+		}
+		for _, l := range req.Links {
+			key := l.Source + "|||" + l.Target
+			mergedLinks[key] = l
+		}
+
+		newNodes := make([]TopologyNode, 0, len(mergedNodes))
+		for _, n := range mergedNodes {
+			newNodes = append(newNodes, n)
+		}
+		newLinks := make([]TopologyLink, 0, len(mergedLinks))
+		for _, l := range mergedLinks {
+			newLinks = append(newLinks, l)
+		}
+
+		currentTopology = TopologyData{
+			Nodes: newNodes,
+			Links: newLinks,
+		}
 		topologyMu.Unlock()
 		
 		c.JSON(http.StatusOK, gin.H{"status": "topology_updated"})
@@ -1429,6 +1514,100 @@ func main() {
 			ips = append(ips, ip)
 		}
 		c.JSON(http.StatusOK, gin.H{"blocked_ips": ips})
+	})
+
+	// Discovery Agent tetikleme endpoint'i
+	// POST /api/discover {"dirs": ["/path/to/project"]}
+	type DiscoverRequest struct {
+		Dirs     []string `json:"dirs" binding:"required"`
+		CodeOnly bool     `json:"code_only"`
+	}
+	type DiscoverStatus struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+		Nodes   int    `json:"nodes"`
+		Links   int    `json:"links"`
+	}
+
+	api.POST("/discover", func(c *gin.Context) {
+		var req DiscoverRequest
+		if err := c.ShouldBindJSON(&req); err != nil || len(req.Dirs) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "dirs alanı gerekli (örn: [\"/Users/me/project\"])"})
+			return
+		}
+
+		// Agent binary path
+		agentPath := os.Getenv("DISCOVERY_AGENT_PATH")
+		if agentPath == "" {
+			if _, err := os.Stat("./discovery-agent-bin"); err == nil {
+				agentPath = "./discovery-agent-bin"
+			} else if _, err := os.Stat("../discovery-agent-bin"); err == nil {
+				agentPath = "../discovery-agent-bin"
+			} else {
+				agentPath = "../discovery-agent-bin"
+			}
+		}
+
+		// Yeni bir tarama seansı başladığı için mevcut topolojiyi sıfırlıyoruz.
+		// Böylece temiz bir sayfa açılır ve döngüdeki her tarama verisi birbiriyle birleşir.
+		topologyMu.Lock()
+		currentTopology = TopologyData{
+			Nodes: []TopologyNode{
+				{ID: "internet", Name: "Internet (External)", Val: 10, Group: 1, Color: "#94a3b8", NodeType: "edge"},
+			},
+			Links: []TopologyLink{},
+		}
+		topologyMu.Unlock()
+
+		// Docker ortamında olup olmadığımızı /host-project klasörünün varlığıyla anlıyoruz
+		inDocker := false
+		if _, err := os.Stat("/host-project"); err == nil {
+			inDocker = true
+		}
+
+		for _, dir := range req.Dirs {
+			// Eğer Docker'dayız ve taranacak dizin host'taki proje klasörümüzü işaret ediyorsa,
+			// bunu Docker içindeki karşılığı olan "/host-project" olarak yeniden eşleştiriyoruz.
+			if inDocker && (dir == "/Users/niyazimertisiksal/Concurrent-Log-Streamer" || strings.HasPrefix(dir, "/Users/niyazimertisiksal/Concurrent-Log-Streamer/")) {
+				oldDir := dir
+				dir = strings.Replace(dir, "/Users/niyazimertisiksal/Concurrent-Log-Streamer", "/host-project", 1)
+				fmt.Printf("🐳 Docker Path Mapping: %s -> %s\n", oldDir, dir)
+			}
+
+			fmt.Printf("🔍 Discovery Agent başlatılıyor: %s\n", dir)
+			
+			// discovery-agent'ı çalıştır
+			// Bu agent, -dir içindeki kodu tarar ve -backend'e POST /api/topology isteği yapar.
+			args := []string{"-dir", dir, "-backend", "http://localhost:8080/api"}
+			if req.CodeOnly {
+				args = append(args, "-code-only")
+			}
+			cmd := exec.Command(agentPath, args...)
+			
+			// Output'u yakala (opsiyonel hata ayıklama için)
+			var out bytes.Buffer
+			var stderr bytes.Buffer
+			cmd.Stdout = &out
+			cmd.Stderr = &stderr
+
+			err := cmd.Run()
+			if err != nil {
+				fmt.Printf("⚠️ Agent çalışma hatası (%s): %s\n", dir, err.Error())
+				fmt.Printf("Agent Stderr: %s\n", stderr.String())
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Agent çalıştırılamadı: " + err.Error()})
+				return
+			}
+			fmt.Printf("Agent Çıktısı: %s\n", out.String())
+		}
+
+		// Topolojinin POST /api/topology üzerinden gelmesi bekleniyor
+		// Biz sadece success döneceğiz
+		c.JSON(http.StatusOK, DiscoverStatus{
+			Status:  "completed",
+			Message: fmt.Sprintf("%d dizin tarandı ve topoloji backend'e aktarıldı", len(req.Dirs)),
+			Nodes:   0, // Client side yeniden fetch edecek
+			Links:   0,
+		})
 	})
 
 	fmt.Println("🚀 SecureStream hazır → http://localhost:8080")

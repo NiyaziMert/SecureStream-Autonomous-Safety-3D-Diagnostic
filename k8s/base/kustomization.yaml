@@ -8,4 +8,3 @@ resources:
   - backend.yaml
   - frontend.yaml
   - ingress.yaml
-  - simulator.yaml

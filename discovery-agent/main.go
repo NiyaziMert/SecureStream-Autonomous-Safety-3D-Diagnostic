@@ -25,6 +25,7 @@ type TopologyNode struct {
 	NodeType    string `json:"node_type,omitempty"`
 	Tech        string `json:"tech,omitempty"`
 	Description string `json:"description,omitempty"`
+	Parent      string `json:"parent,omitempty"`
 }
 
 type TopologyLink struct {
@@ -40,15 +41,20 @@ type TopologyData struct {
 }
 
 var (
-	// Microservice HTTP çağrılarını yakalamak için (Örn: http://payment_service/api)
+	// Microservice HTTP çağrılarını yakalamak için
 	urlRegex = regexp.MustCompile(`https?://([a-zA-Z0-9_-]+)(:\d+)?/`)
 	// Docker-compose'daki servis tanımlarını yakalamak için
 	dockerRegex = regexp.MustCompile(`^\s*([a-zA-Z0-9_-]+):\s*$`)
+	// Go fonksiyonlarını yakalamak için (Örn: func (s *Service) DoSomething() veya func main())
+	goFuncRegex = regexp.MustCompile(`func\s+(?:\([^)]+\)\s+)?([a-zA-Z0-9_]+)\s*\(`)
+	// JavaScript fonksiyonlarını yakalamak için (Örn: function doSomething() veya const doSomething = () =>)
+	jsFuncRegex = regexp.MustCompile(`(?:function\s+([a-zA-Z0-9_]+)\s*\(|const\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_]+)\s*=>)`)
 )
 
 func main() {
 	targetDir := flag.String("dir", ".", "Tarama yapilacak ana dizin")
 	backendURL := flag.String("backend", "http://localhost:8080/api", "SecureStream API URL")
+	codeOnly := flag.Bool("code-only", false, "Docker containerlarini yok sayar, sadece kod dosyalarini ve fonksiyonlari tarar")
 	flag.Parse()
 
 	fmt.Printf("🔍 Kodu tarıyor: %s\n", *targetDir)
@@ -56,7 +62,7 @@ func main() {
 	nodesMap := make(map[string]TopologyNode)
 	linksMap := make(map[string]TopologyLink) // key: source->target
 
-	// Başlangıç için internet node'unu ekleyelim
+	fmt.Printf("🌍 Node Bulundu: [internet] (Kaynak: Dış ağ girişi varsayılan kuralı)\n")
 	nodesMap["internet"] = TopologyNode{ID: "internet", Name: "Internet (External)", Val: 10, Group: 1, Color: "#94a3b8", NodeType: "edge"}
 
 	err := filepath.WalkDir(*targetDir, func(path string, d fs.DirEntry, err error) error {
@@ -64,7 +70,7 @@ func main() {
 			return nil
 		}
 		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules" || d.Name() == "dist" {
+			if (strings.HasPrefix(d.Name(), ".") && d.Name() != "." && d.Name() != "..") || d.Name() == "node_modules" || d.Name() == "dist" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -72,7 +78,13 @@ func main() {
 
 		ext := filepath.Ext(path)
 		name := d.Name()
-		if ext == ".go" || ext == ".js" || ext == ".py" || name == "docker-compose.yml" || name == "docker-compose.yaml" {
+		isDockerCompose := name == "docker-compose.yml" || name == "docker-compose.yaml"
+		if *codeOnly && isDockerCompose {
+			return nil
+		}
+		// Modern web geliştirme için .jsx, .ts ve .tsx uzantılarını da destekliyoruz.
+		isSourceCode := ext == ".go" || ext == ".js" || ext == ".jsx" || ext == ".ts" || ext == ".tsx" || ext == ".py"
+		if isSourceCode || isDockerCompose {
 			analyzeFile(path, nodesMap, linksMap)
 		}
 		return nil
@@ -104,8 +116,16 @@ func analyzeFile(path string, nodes map[string]TopologyNode, links map[string]To
 
 	// Dosyanın bulunduğu klasörün adını servis adı olarak kabul ediyoruz (Örn: /backend -> backend servisi)
 	dirName := filepath.Base(filepath.Dir(path))
-	if dirName == "." || dirName == "src" {
-		dirName = "core_service"
+	if dirName == "." || dirName == "src" || dirName == "internal" || dirName == "pkg" || dirName == "cmd" {
+		// Eğer klasör adı genel/jenerik bir klasörse (src, internal, pkg, cmd vb.),
+		// bir üst klasörün adını servis adı olarak alıyoruz (Örn: frontend/src/App.jsx -> frontend servisi).
+		parentDir := filepath.Dir(filepath.Dir(path))
+		parentBase := filepath.Base(parentDir)
+		if parentBase != "." && parentBase != "/" && parentBase != "" {
+			dirName = parentBase
+		} else {
+			dirName = "core_service"
+		}
 	}
 
 	// docker-compose dosyasından statik containerları tarama
@@ -125,6 +145,9 @@ func analyzeFile(path string, nodes map[string]TopologyNode, links map[string]To
 				match := dockerRegex.FindStringSubmatch(line)
 				if len(match) > 1 {
 					srv := match[1]
+					if _, exists := nodes[srv]; !exists {
+						fmt.Printf("📦 Node Bulundu: [%s] (Kaynak: %s içindeki Docker servisi)\n", srv, filepath.Base(path))
+					}
 					nodes[srv] = TopologyNode{ID: srv, Name: srv + " (Container)", Val: 6, Group: 3, Color: "#0ea5e9", NodeType: "service", Tech: "Docker"}
 				}
 			}
@@ -134,6 +157,7 @@ func analyzeFile(path string, nodes map[string]TopologyNode, links map[string]To
 
 	// Bu klasörü node olarak ekle
 	if _, exists := nodes[dirName]; !exists {
+		fmt.Printf("📂 Node Bulundu: [%s] (Kaynak: Klasör yapısı / %s modülü)\n", dirName, dirName)
 		color := "#3b82f6" // Mavi (Default)
 		if strings.Contains(dirName, "db") || strings.Contains(dirName, "postgres") {
 			color = "#8b5cf6"
@@ -160,6 +184,7 @@ func analyzeFile(path string, nodes map[string]TopologyNode, links map[string]To
 				}
 
 				if _, exists := nodes[target]; !exists {
+					fmt.Printf("🌐 Node Bulundu: [%s] (Kaynak: %s kodundaki HTTP API çağrısı)\n", target, filepath.Base(path))
 					nodes[target] = TopologyNode{ID: target, Name: target, Val: 4, Group: 5, Color: "#10b981", NodeType: "dependency"}
 				}
 
@@ -171,6 +196,7 @@ func analyzeFile(path string, nodes map[string]TopologyNode, links map[string]To
 		// Redis bağlantısını yakala
 		if strings.Contains(line, "redis.NewClient") || strings.Contains(line, "redis:") {
 			if _, ok := nodes["redis"]; !ok {
+				fmt.Printf("🗄️  Node Bulundu: [redis] (Kaynak: %s kodundaki Redis bağlantısı)\n", filepath.Base(path))
 				nodes["redis"] = TopologyNode{ID: "redis", Name: "Redis Cache", Val: 5, Group: 6, Color: "#ef4444", NodeType: "cache"}
 			}
 			links[dirName+"->redis"] = TopologyLink{Source: dirName, Target: "redis", Val: 4, Label: "Cache Query"}
@@ -179,9 +205,34 @@ func analyzeFile(path string, nodes map[string]TopologyNode, links map[string]To
 		// Postgres/SQL bağlantısını yakala
 		if strings.Contains(line, "sql.Open(\"postgres\"") || strings.Contains(line, "postgres:") {
 			if _, ok := nodes["postgres"]; !ok {
+				fmt.Printf("🐘 Node Bulundu: [postgres] (Kaynak: %s kodundaki SQL bağlantısı)\n", filepath.Base(path))
 				nodes["postgres"] = TopologyNode{ID: "postgres", Name: "PostgreSQL", Val: 7, Group: 6, Color: "#8b5cf6", NodeType: "database"}
 			}
 			links[dirName+"->postgres"] = TopologyLink{Source: dirName, Target: "postgres", Val: 5, Label: "SQL Query"}
+		}
+
+		// Go veya JavaScript/React Fonksiyonlarını Yakala
+		var funcName string
+		if goMatch := goFuncRegex.FindStringSubmatch(line); len(goMatch) > 1 {
+			funcName = goMatch[1]
+		} else if jsMatch := jsFuncRegex.FindStringSubmatch(line); len(jsMatch) > 1 {
+			if jsMatch[1] != "" {
+				funcName = jsMatch[1]
+			} else {
+				funcName = jsMatch[2]
+			}
+		}
+
+		if funcName != "" && len(funcName) > 2 && funcName != "if" && funcName != "for" {
+			// Fonksiyonları haritaya küçük Node'lar (sarı renkli) olarak ekliyoruz
+			funcID := dirName + "_" + funcName
+			if _, exists := nodes[funcID]; !exists {
+				fmt.Printf("⚙️  Fonksiyon Bulundu: [%s()] (Kaynak: %s modülü içindeki %s dosyası)\n", funcName, dirName, filepath.Base(path))
+				nodes[funcID] = TopologyNode{ID: funcID, Name: funcName + "()", Val: 2, Group: 7, Color: "#f59e0b", NodeType: "function", Parent: dirName}
+				
+				// Fonksiyonu ana modüle bağla (Yıldız kümesi görünümü için)
+				links[dirName+"->"+funcID] = TopologyLink{Source: dirName, Target: funcID, Val: 1, Label: "contains"}
+			}
 		}
 	}
 }
