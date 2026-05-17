@@ -280,8 +280,12 @@ func main() {
 	fmt.Printf("🚀 [%s] Simulator starting...\n", tenantName)
 
 	// Backend hazır olana kadar bekle
+	healthURL := os.Getenv("HEALTH_URL")
+	if healthURL == "" {
+		healthURL = "http://localhost:8080/health"
+	}
 	for i := 0; i < 10; i++ {
-		resp, err := httpClient.Get("http://localhost:8080/health")
+		resp, err := httpClient.Get(healthURL)
 		if err == nil && resp.StatusCode == 200 {
 			resp.Body.Close()
 			fmt.Println("✅ Backend is up!")

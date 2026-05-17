@@ -3,7 +3,7 @@ WORKDIR /app
 COPY go.mod ./
 # Bağımlılık yok, go.sum gerekmiyor
 COPY . .
-RUN go build -o simulator .
+RUN CGO_ENABLED=0 go build -p 1 -o simulator .
 
 FROM alpine:latest
 WORKDIR /app

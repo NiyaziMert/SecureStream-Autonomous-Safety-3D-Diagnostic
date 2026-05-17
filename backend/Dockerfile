@@ -3,7 +3,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -o securestream-backend .
+RUN CGO_ENABLED=0 go build -p 1 -o securestream-backend .
 
 FROM alpine:latest
 WORKDIR /app
