@@ -1,27 +1,28 @@
 # 🛡️ SecureStream AI: Autonomous Security Diagnostics Platform
 
-SecureStream AI is a state-of-the-art, autonomous security monitoring and diagnostics platform designed for high-scale B2B microservice environments. It bridges the gap between raw log data and actionable security intelligence through immersive 3D visualization and AI-driven automation.
+SecureStream AI is a state-of-the-art, autonomous security monitoring and diagnostics platform designed for high-scale B2B microservice environments. It bridges the gap between raw log data and actionable security intelligence through immersive 2D force-directed topology visualization and AI-driven automation.
 
-![Global 3D Topology Dashboard](docs/images/topology.png)
+![2D Force-Directed Network Topology](docs/images/topology-2d.png)
 
 ## 🌟 Vision & Overview
 
 In modern distributed systems, observability is often buried under flat logs and complex tables. SecureStream AI transforms this by providing:
-1.  **Immersive Observability:** A 3D force-directed graph that lives and breathes with your traffic.
-2.  **Autonomous Response:** An AI agent that not only detects but also acts to neutralize threats.
+1.  **Immersive Observability:** A 2D force-directed graph with real-time data flow animations, link labels, and node detail panels.
+2.  **Autonomous Response:** An AI agent (J.A.R.V.I.S) that not only detects but also acts to neutralize threats.
 3.  **High-Performance Ingestion:** A Go-powered engine capable of processing massive log streams with sub-millisecond latency.
 
 ---
 
 ## 🚀 Feature Deep-Dive
 
-### 1. 🌌 Dynamic 3D Topology Engine
-The centerpiece of SecureStream is our interactive 3D topology visualization, powered by `react-force-graph-3d`.
-*   **Real-time Impulses:** Every log processed by the backend triggers a visual "data particle" (impulse) that travels between the source and destination nodes in 3D space.
-*   **Hierarchical Navigation:** Users can click on major service clusters (e.g., Payment Service) to expand them, revealing the internal microservices and specific function calls (e.g., Stripe Validate ➔ Stripe Charge).
-*   **Visual Health Scoring:** Nodes dynamically change their visual state based on real-time latency and error rates.
-
-![Deep-Dive Hierarchy](docs/images/expanded.png)
+### 1. 🌐 Interactive 2D Network Topology
+The centerpiece of SecureStream is our interactive 2D force-directed topology, powered by `react-force-graph-2d`.
+*   **40+ Service Nodes:** Complete microservice architecture including API Gateway, Auth, Product, Order, Payment, Analytics, Logging services, and their sub-components.
+*   **Real-time Data Flows:** Every log processed by the backend triggers animated particles traveling between source and destination nodes.
+*   **Link Labels:** Zoom in to see exactly what data flows between services — API calls, gRPC methods, SQL queries, cache operations.
+*   **Node Detail Panel:** Click any node to see its description, tech stack, node type, and active connections in a sleek glassmorphic panel.
+*   **Hierarchical Expansion:** Click service clusters to expand and reveal internal microservices and function calls.
+*   **Collision-Free Layout:** D3 force simulation with charge repulsion ensures nodes never overlap.
 
 ### 2. 🤖 J.A.R.V.I.S: Autonomous Security Assistant
 Beyond simple dashboards, SecureStream features **J.A.R.V.I.S**, an AI agent integrated with **Llama-3 (Groq)**.
@@ -38,13 +39,9 @@ Our Go-based backend implements a concurrent log processing pipeline:
     *   **Port Scanning:** Identifies firewall `DROP` patterns.
     *   **Privilege Escalation:** Monitors unauthorized `sudo` attempts.
 
-![Threat Detection Engine](docs/images/threats.png)
-
 ### 4. 📊 System Control & Uptime Monitoring
 *   **Action Control Panel:** A dedicated audit trail showing every IP blocked by the AI or the automated engine, ensuring transparency in autonomous decisions.
 *   **Uptime Diagnostics:** Continuous health-check simulation for core infrastructure (Nginx, PostgreSQL, Redis, Auth Service), visualizing latency and availability percentages.
-
-![Autonomous Actions Audit](docs/images/actions.png)
 
 ---
 
@@ -58,8 +55,13 @@ Our Go-based backend implements a concurrent log processing pipeline:
 
 ### **Frontend (The View)**
 *   **Library:** React 18+ with Vite.
-*   **Visualization:** Three.js / React-Force-Graph-3D.
+*   **Visualization:** react-force-graph-2d (Canvas-based 2D force-directed graph).
 *   **Styling:** Custom Vanilla CSS with Glassmorphism and CSS Variables for dynamic themes.
+
+### **Client Simulator**
+*   **40+ Topology Nodes:** CDN, DNS, WAF, Nginx, API Gateway, Auth, User, Product, Order, Payment, Notification, Analytics, Logging services with sub-services and function-level nodes.
+*   **80+ Labeled Links:** Each connection describes the data flow (API endpoints, gRPC calls, SQL queries, Kafka events).
+*   **Realistic Traffic:** Generates diverse logs across all services including cache operations, search queries, order sagas, and payment processing.
 
 ### **Multi-Tenancy**
 SecureStream is built for SaaS. Each client is isolated via unique **API Keys**. The backend automatically partitions data and WebSocket broadcasts based on the Tenant ID identified during the handshake.

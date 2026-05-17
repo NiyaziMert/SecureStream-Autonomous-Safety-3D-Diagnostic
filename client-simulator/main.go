@@ -6,30 +6,43 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"time"
 )
 
 const (
 	apiKey     = "dev-api-key-12345"
-	baseURL    = "http://localhost:8080/api"
 	tenantName = "Acme E-Commerce Ltd."
 )
+
+var baseURL string
+
+func init() {
+	baseURL = os.Getenv("BACKEND_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:8080/api"
+	}
+}
 
 // ---- Veri Yapıları ----
 
 type TopologyNode struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Val    int    `json:"val"`
-	Group  int    `json:"group"`
-	Color  string `json:"color"`
-	Parent string `json:"parent,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Val         int    `json:"val"`
+	Group       int    `json:"group"`
+	Color       string `json:"color"`
+	Parent      string `json:"parent,omitempty"`
+	Description string `json:"description,omitempty"`
+	Tech        string `json:"tech,omitempty"`
+	NodeType    string `json:"node_type,omitempty"`
 }
 
 type TopologyLink struct {
 	Source string `json:"source"`
 	Target string `json:"target"`
 	Val    int    `json:"val"`
+	Label  string `json:"label,omitempty"`
 }
 
 type TopologyData struct {
@@ -77,120 +90,13 @@ func randomSession() string {
 }
 
 // ---- Topoloji Tanımı ----
-
-func buildTopology() TopologyData {
-	nodes := []TopologyNode{
-		// ── Katman 0: Ağ Giriş Noktaları ──
-		{ID: "internet", Name: "Internet Traffic", Val: 12, Group: 1, Color: "#94a3b8"},
-		{ID: "waf", Name: "Cloudflare WAF", Val: 9, Group: 2, Color: "#f59e0b"},
-		{ID: "nginx", Name: "Nginx Load Balancer", Val: 7, Group: 3, Color: "#22c55e"},
-
-		// ── Katman 1: Ana Servisler ──
-		{ID: "auth_service", Name: "Auth Service", Val: 6, Group: 4, Color: "#0ea5e9"},
-		{ID: "product_service", Name: "Product Service", Val: 6, Group: 4, Color: "#0ea5e9"},
-		{ID: "payment_service", Name: "Payment Service", Val: 7, Group: 4, Color: "#0ea5e9"},
-		{ID: "notification_service", Name: "Notification Svc", Val: 4, Group: 4, Color: "#0ea5e9"},
-
-		// ── Katman 1: Veri Katmanı ──
-		{ID: "db_master", Name: "PostgreSQL Master", Val: 8, Group: 5, Color: "#8b5cf6"},
-		{ID: "db_replica", Name: "PostgreSQL Replica", Val: 6, Group: 5, Color: "#7c3aed"},
-		{ID: "redis", Name: "Redis Cache", Val: 6, Group: 6, Color: "#ef4444"},
-		{ID: "elasticsearch", Name: "Elasticsearch", Val: 5, Group: 6, Color: "#f97316"},
-
-		// ── Katman 2: Auth Service Microservisleri ──
-		{ID: "auth_jwt", Name: "JWT Service", Val: 4, Group: 4, Color: "#38bdf8", Parent: "auth_service"},
-		{ID: "auth_oauth", Name: "OAuth2 Provider", Val: 4, Group: 4, Color: "#38bdf8", Parent: "auth_service"},
-		{ID: "auth_session", Name: "Session Manager", Val: 3, Group: 4, Color: "#38bdf8", Parent: "auth_service"},
-
-		// ── Katman 2: Product Service Microservisleri ──
-		{ID: "prod_search", Name: "Search Engine", Val: 4, Group: 4, Color: "#34d399", Parent: "product_service"},
-		{ID: "prod_inventory", Name: "Inventory Manager", Val: 4, Group: 4, Color: "#34d399", Parent: "product_service"},
-		{ID: "prod_recommend", Name: "Recommendation AI", Val: 4, Group: 4, Color: "#34d399", Parent: "product_service"},
-
-		// ── Katman 2: Payment Service Microservisleri ──
-		{ID: "pay_stripe", Name: "Stripe Gateway", Val: 5, Group: 4, Color: "#818cf8", Parent: "payment_service"},
-		{ID: "pay_paypal", Name: "PayPal Gateway", Val: 4, Group: 4, Color: "#818cf8", Parent: "payment_service"},
-		{ID: "pay_fraud", Name: "Fraud Detection AI", Val: 5, Group: 4, Color: "#818cf8", Parent: "payment_service"},
-		{ID: "pay_invoice", Name: "Invoice Service", Val: 3, Group: 4, Color: "#818cf8", Parent: "payment_service"},
-
-		// ── Katman 3: Stripe Gateway Fonksiyonları ──
-		{ID: "fn_stripe_validate", Name: "ValidateToken()", Val: 2, Group: 4, Color: "#c4b5fd", Parent: "pay_stripe"},
-		{ID: "fn_stripe_charge", Name: "ProcessCharge()", Val: 2, Group: 4, Color: "#c4b5fd", Parent: "pay_stripe"},
-		{ID: "fn_stripe_refund", Name: "RefundFlow()", Val: 2, Group: 4, Color: "#c4b5fd", Parent: "pay_stripe"},
-		{ID: "fn_stripe_webhook", Name: "WebhookHandler()", Val: 2, Group: 4, Color: "#c4b5fd", Parent: "pay_stripe"},
-	}
-
-	links := []TopologyLink{
-		// Giriş zinciri
-		{Source: "internet", Target: "waf", Val: 8},
-		{Source: "waf", Target: "nginx", Val: 8},
-
-		// Nginx → Servisler
-		{Source: "nginx", Target: "auth_service", Val: 5},
-		{Source: "nginx", Target: "product_service", Val: 6},
-		{Source: "nginx", Target: "payment_service", Val: 4},
-		{Source: "nginx", Target: "notification_service", Val: 2},
-
-		// Auth → DB / Redis
-		{Source: "auth_service", Target: "db_master", Val: 3},
-		{Source: "auth_service", Target: "redis", Val: 4},
-
-		// Auth microservisler
-		{Source: "auth_service", Target: "auth_jwt", Val: 3},
-		{Source: "auth_service", Target: "auth_oauth", Val: 2},
-		{Source: "auth_service", Target: "auth_session", Val: 3},
-		{Source: "auth_jwt", Target: "redis", Val: 3},
-		{Source: "auth_oauth", Target: "db_master", Val: 2},
-		{Source: "auth_session", Target: "redis", Val: 3},
-
-		// Product → DB / Redis / ES
-		{Source: "product_service", Target: "redis", Val: 4},
-		{Source: "product_service", Target: "db_replica", Val: 3},
-		{Source: "product_service", Target: "elasticsearch", Val: 2},
-
-		// Product microservisler
-		{Source: "product_service", Target: "prod_search", Val: 3},
-		{Source: "product_service", Target: "prod_inventory", Val: 3},
-		{Source: "product_service", Target: "prod_recommend", Val: 2},
-		{Source: "prod_search", Target: "elasticsearch", Val: 3},
-		{Source: "prod_inventory", Target: "db_replica", Val: 3},
-		{Source: "prod_recommend", Target: "redis", Val: 2},
-
-		// Payment microservisler
-		{Source: "payment_service", Target: "pay_stripe", Val: 3},
-		{Source: "payment_service", Target: "pay_paypal", Val: 2},
-		{Source: "payment_service", Target: "pay_fraud", Val: 4},
-		{Source: "payment_service", Target: "pay_invoice", Val: 2},
-		{Source: "pay_stripe", Target: "db_master", Val: 2},
-		{Source: "pay_paypal", Target: "db_master", Val: 2},
-		{Source: "pay_fraud", Target: "db_master", Val: 3},
-		{Source: "pay_invoice", Target: "db_master", Val: 2},
-		{Source: "pay_stripe", Target: "pay_fraud", Val: 3},
-		{Source: "pay_paypal", Target: "pay_fraud", Val: 2},
-
-		// Stripe fonksiyon zinciri
-		{Source: "pay_stripe", Target: "fn_stripe_validate", Val: 3},
-		{Source: "fn_stripe_validate", Target: "fn_stripe_charge", Val: 3},
-		{Source: "fn_stripe_validate", Target: "fn_stripe_refund", Val: 1},
-		{Source: "fn_stripe_charge", Target: "fn_stripe_webhook", Val: 2},
-		{Source: "fn_stripe_charge", Target: "db_master", Val: 2},
-		{Source: "fn_stripe_refund", Target: "db_master", Val: 1},
-
-		// DB replikasyonu
-		{Source: "db_master", Target: "db_replica", Val: 3},
-
-		// Notification
-		{Source: "notification_service", Target: "redis", Val: 2},
-	}
-
-	return TopologyData{Nodes: nodes, Links: links}
-}
+// buildTopology() is defined in topology.go
 
 // ---- Log Üreticileri ----
 
 // normalLogs: Sisteme gerçekçi normal trafik logları üretir
 func buildNormalLog() (string, string) {
-	roll := rand.Intn(100)
+	roll := rand.Intn(150)
 	user := randomUser()
 	session := randomSession()
 	ip := randomIP()
@@ -198,89 +104,111 @@ func buildNormalLog() (string, string) {
 	orderID := rand.Intn(100000) + 10000
 
 	switch {
-	// ── Auth service logs (25%) ──
-	case roll < 10:
-		return "auth_service", fmt.Sprintf(
-			`[INFO] User %s authenticated successfully from %s session=%s`,
-			user, ip, session)
-	case roll < 15:
-		return "auth_jwt", fmt.Sprintf(
-			`[DEBUG] JWT issued for user=%s exp=3600s session=%s`, user, session)
+	// ── Auth service logs ──
+	case roll < 8:
+		return "auth_service", fmt.Sprintf(`[INFO] User %s authenticated successfully from %s session=%s`, user, ip, session)
+	case roll < 12:
+		return "auth_jwt", fmt.Sprintf(`[DEBUG] JWT issued for user=%s exp=3600s session=%s`, user, session)
+	case roll < 14:
+		return "auth_oauth", fmt.Sprintf(`[INFO] OAuth2 token refresh for user=%s provider=google`, user)
 	case roll < 18:
-		return "auth_oauth", fmt.Sprintf(
-			`[INFO] OAuth2 token refresh for user=%s provider=google`, user)
-	case roll < 25:
-		return "auth_session", fmt.Sprintf(
-			`[DEBUG] Session %s extended TTL=1800 user=%s ip=%s`, session, user, ip)
+		return "auth_session", fmt.Sprintf(`[DEBUG] Session %s extended TTL=1800 user=%s ip=%s`, session, user, ip)
+	case roll < 20:
+		return "auth_mfa", fmt.Sprintf(`[INFO] MFA TOTP verified user=%s attempts=1 ip=%s`, user, ip)
 
-	// ── Product service logs (30%) ──
-	case roll < 35:
-		return "product_service", fmt.Sprintf(
-			`[INFO] GET /api/v1/products?page=%d&limit=20 user=%s 200 %dms`,
-			rand.Intn(100), user, rand.Intn(80)+10)
+	// ── User service logs ──
+	case roll < 24:
+		return "user_service", fmt.Sprintf(`[INFO] GET /users/%s profile_loaded=true cache=%s latency=%dms`, user, []string{"HIT", "MISS"}[rand.Intn(2)], rand.Intn(30)+5)
+	case roll < 26:
+		return "user_service", fmt.Sprintf(`[INFO] PUT /users/%s fields_updated=[email,preferences] ip=%s`, user, ip)
+
+	// ── Product service logs ──
+	case roll < 32:
+		return "product_service", fmt.Sprintf(`[INFO] GET /api/v1/products?page=%d&limit=20 user=%s 200 %dms`, rand.Intn(100), user, rand.Intn(80)+10)
+	case roll < 36:
+		return "prod_search", fmt.Sprintf(`[INFO] Search query="%s" hits=%d user=%s took=%dms`,
+			[]string{"sneakers", "laptop", "headphones", "jacket", "watch", "phone case", "backpack"}[rand.Intn(7)], rand.Intn(200)+1, user, rand.Intn(50)+5)
 	case roll < 40:
-		return "prod_search", fmt.Sprintf(
-			`[INFO] Search query="%s" hits=%d user=%s took=%dms`,
-			[]string{"sneakers", "laptop", "headphones", "jacket", "watch"}[rand.Intn(5)],
-			rand.Intn(200)+1, user, rand.Intn(50)+5)
-	case roll < 45:
-		return "prod_inventory", fmt.Sprintf(
-			`[DEBUG] Stock check product_id=%d qty=%d warehouse=IST-%02d`,
-			productID, rand.Intn(500), rand.Intn(5)+1)
-	case roll < 55:
-		return "prod_recommend", fmt.Sprintf(
-			`[INFO] Recommendations generated for user=%s model=collaborative items=%d latency=%dms`,
-			user, rand.Intn(10)+5, rand.Intn(120)+20)
+		return "prod_inventory", fmt.Sprintf(`[DEBUG] Stock check product_id=%d qty=%d warehouse=IST-%02d`, productID, rand.Intn(500), rand.Intn(5)+1)
+	case roll < 44:
+		return "prod_recommend", fmt.Sprintf(`[INFO] Recommendations generated for user=%s model=collaborative items=%d latency=%dms`, user, rand.Intn(10)+5, rand.Intn(120)+20)
+	case roll < 46:
+		return "prod_pricing", fmt.Sprintf(`[DEBUG] CalcPrice() product_id=%d base=%.2f discount=%.0f%% final=%.2f`, productID, float64(rand.Intn(10000)+100)/100.0, float64(rand.Intn(30)), float64(rand.Intn(8000)+100)/100.0)
 
-	// ── Payment service logs (20%) ──
-	case roll < 60:
-		return "payment_service", fmt.Sprintf(
-			`[INFO] Payment initiated order_id=%d user=%s amount=%.2f currency=USD`,
-			orderID, user, float64(rand.Intn(50000)+500)/100.0)
-	case roll < 65:
-		return "pay_stripe", fmt.Sprintf(
-			`[INFO] Stripe charge order_id=%d amount=%.2f status=succeeded`,
-			orderID, float64(rand.Intn(50000)+500)/100.0)
-	case roll < 68:
-		return "fn_stripe_validate", fmt.Sprintf(
-			`[DEBUG] ValidateToken() card_brand=%s last4=%04d user=%s ok=true`,
-			[]string{"visa", "mastercard", "amex"}[rand.Intn(3)],
-			rand.Intn(9000)+1000, user)
+	// ── Order service logs ──
+	case roll < 50:
+		return "order_service", fmt.Sprintf(`[INFO] POST /orders user=%s items=%d total=%.2f status=pending`, user, rand.Intn(5)+1, float64(rand.Intn(50000)+500)/100.0)
+	case roll < 53:
+		return "order_cart", fmt.Sprintf(`[DEBUG] ManageCart() user=%s action=%s product_id=%d qty=%d`, user, []string{"add", "remove", "update"}[rand.Intn(3)], productID, rand.Intn(3)+1)
+	case roll < 56:
+		return "order_checkout", fmt.Sprintf(`[INFO] InitCheckout() order_id=%d saga_step=%s user=%s`, orderID, []string{"reserve_stock", "charge_payment", "confirm"}[rand.Intn(3)], user)
+	case roll < 58:
+		return "order_tracking", fmt.Sprintf(`[INFO] TrackOrder() order_id=%d status=%s eta=%dh`, orderID, []string{"processing", "shipped", "in_transit", "delivered"}[rand.Intn(4)], rand.Intn(72)+1)
+
+	// ── Payment service logs ──
+	case roll < 62:
+		return "payment_service", fmt.Sprintf(`[INFO] Payment initiated order_id=%d user=%s amount=%.2f currency=USD`, orderID, user, float64(rand.Intn(50000)+500)/100.0)
+	case roll < 66:
+		return "pay_stripe", fmt.Sprintf(`[INFO] Stripe charge order_id=%d amount=%.2f status=succeeded`, orderID, float64(rand.Intn(50000)+500)/100.0)
+	case roll < 69:
+		return "fn_stripe_validate", fmt.Sprintf(`[DEBUG] ValidateToken() card_brand=%s last4=%04d user=%s ok=true`,
+			[]string{"visa", "mastercard", "amex"}[rand.Intn(3)], rand.Intn(9000)+1000, user)
 	case roll < 73:
-		return "fn_stripe_charge", fmt.Sprintf(
-			`[INFO] ProcessCharge() order_id=%d amount=%.2f txn_id=pi_%08x ok=true`,
-			orderID, float64(rand.Intn(50000)+500)/100.0, rand.Int31())
+		return "fn_stripe_charge", fmt.Sprintf(`[INFO] ProcessCharge() order_id=%d amount=%.2f txn_id=pi_%08x ok=true`, orderID, float64(rand.Intn(50000)+500)/100.0, rand.Int31())
 	case roll < 75:
-		return "fn_stripe_webhook", fmt.Sprintf(
-			`[INFO] WebhookHandler() event=payment_intent.succeeded order_id=%d`, orderID)
+		return "fn_stripe_webhook", fmt.Sprintf(`[INFO] WebhookHandler() event=payment_intent.succeeded order_id=%d`, orderID)
 	case roll < 78:
-		return "pay_fraud", fmt.Sprintf(
-			`[INFO] FraudCheck order_id=%d user=%s score=%.2f action=allow`,
-			orderID, user, rand.Float64()*0.3)
+		return "pay_fraud", fmt.Sprintf(`[INFO] FraudCheck order_id=%d user=%s score=%.2f action=allow`, orderID, user, rand.Float64()*0.3)
+	case roll < 80:
+		return "pay_invoice", fmt.Sprintf(`[INFO] GenerateInvoice() order_id=%d user=%s pdf_size=%dKB uploaded=s3`, orderID, user, rand.Intn(200)+50)
 
-	// ── Infrastructure logs (25%) ──
-	case roll < 83:
-		return "nginx", fmt.Sprintf(
-			`%s - %s [%s] "GET /api/v1/products HTTP/1.1" 200 %d "-" "Mozilla/5.0"`,
-			ip, user, time.Now().Format("02/Jan/2006:15:04:05 -0700"), rand.Intn(5000)+500)
-	case roll < 87:
-		return "redis", fmt.Sprintf(
-			`[DEBUG] CACHE HIT key=product:%d ttl=%ds`, productID, rand.Intn(300)+60)
-	case roll < 91:
-		return "db_master", fmt.Sprintf(
-			`[LOG] duration: %.3f ms  statement: SELECT * FROM orders WHERE user_id = $1 LIMIT 20`,
-			rand.Float64()*10+0.5)
-	case roll < 94:
-		return "db_replica", fmt.Sprintf(
-			`[LOG] duration: %.3f ms  statement: SELECT * FROM products WHERE category_id = $1`,
-			rand.Float64()*5+0.2)
-	case roll < 97:
-		return "waf", fmt.Sprintf(
-			`ALLOW IN=eth0 SRC=%s DST=10.0.0.10 PROTO=TCP DPT=443 user=%s`, ip, user)
+	// ── API Gateway logs ──
+	case roll < 85:
+		return "api_gateway", fmt.Sprintf(`[INFO] %s /api/v1/%s from=%s latency=%dms rate_remaining=%d`,
+			[]string{"GET", "POST", "PUT", "DELETE"}[rand.Intn(4)],
+			[]string{"products", "orders", "users/me", "auth/login", "payments"}[rand.Intn(5)],
+			ip, rand.Intn(100)+5, rand.Intn(60)+1)
+
+	// ── Infrastructure logs ──
+	case roll < 90:
+		return "nginx", fmt.Sprintf(`%s - %s [%s] "GET /api/v1/products HTTP/1.1" 200 %d "-" "Mozilla/5.0"`, ip, user, time.Now().Format("02/Jan/2006:15:04:05 -0700"), rand.Intn(5000)+500)
+	case roll < 95:
+		return "redis", fmt.Sprintf(`[DEBUG] CACHE %s key=%s:%d ttl=%ds`, []string{"HIT", "MISS", "SET"}[rand.Intn(3)], []string{"product", "session", "cart", "price"}[rand.Intn(4)], productID, rand.Intn(300)+60)
+	case roll < 100:
+		return "db_master", fmt.Sprintf(`[LOG] duration: %.3f ms  statement: SELECT * FROM orders WHERE user_id = $1 LIMIT 20`, rand.Float64()*10+0.5)
+	case roll < 104:
+		return "db_replica", fmt.Sprintf(`[LOG] duration: %.3f ms  statement: SELECT * FROM products WHERE category_id = $1`, rand.Float64()*5+0.2)
+	case roll < 108:
+		return "waf", fmt.Sprintf(`ALLOW IN=eth0 SRC=%s DST=10.0.0.10 PROTO=TCP DPT=443 user=%s`, ip, user)
+
+	// ── Analytics & Logging ──
+	case roll < 112:
+		return "analytics_service", fmt.Sprintf(`[INFO] Event tracked user=%s event=%s page=%s session=%s`,
+			user, []string{"page_view", "add_to_cart", "checkout_start", "purchase", "search"}[rand.Intn(5)],
+			[]string{"/", "/products", "/cart", "/checkout", "/account"}[rand.Intn(5)], session)
+	case roll < 116:
+		return "logging_service", fmt.Sprintf(`[DEBUG] Bulk indexed %d log entries to ES cluster latency=%dms`, rand.Intn(500)+50, rand.Intn(200)+10)
+
+	// ── Kafka ──
+	case roll < 120:
+		return "kafka", fmt.Sprintf(`[INFO] Topic=%s partition=%d offset=%d key=%s`,
+			[]string{"order.created", "payment.completed", "user.login", "analytics.events", "order.status.updated"}[rand.Intn(5)],
+			rand.Intn(12), rand.Intn(100000)+1000, user)
+
+	// ── CDN & DNS ──
+	case roll < 124:
+		return "cdn", fmt.Sprintf(`[INFO] %s %s/%s status=%d cache=%s edge=%s bytes=%d`,
+			"GET", "assets", []string{"logo.png", "bundle.js", "styles.css", "hero.webp"}[rand.Intn(4)],
+			200, []string{"HIT", "MISS", "STALE"}[rand.Intn(3)],
+			[]string{"IST", "FRA", "IAD", "NRT"}[rand.Intn(4)], rand.Intn(500000)+1000)
+	case roll < 126:
+		return "dns", fmt.Sprintf(`[DEBUG] Resolved api.acme-ecom.com → %s ttl=300 geo=%s`, ip, []string{"TR", "DE", "US", "JP"}[rand.Intn(4)])
+
+	// ── Notification ──
 	default:
-		return "notification_service", fmt.Sprintf(
-			`[INFO] Email sent to=%s@example.com type=order_confirmation order_id=%d`,
-			user, orderID)
+		return "notification_service", fmt.Sprintf(`[INFO] %s sent to=%s@example.com type=%s order_id=%d`,
+			[]string{"Email", "SMS", "Push"}[rand.Intn(3)], user,
+			[]string{"order_confirmation", "shipping_update", "payment_receipt", "welcome"}[rand.Intn(4)], orderID)
 	}
 }
 

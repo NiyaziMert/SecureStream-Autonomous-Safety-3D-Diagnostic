@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: securestream-ingress
+  namespace: securestream
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    # For HTTPS (Requires a domain and certificate)
+    # networking.gke.io/managed-certificates: "securestream-cert"
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-service
+            port:
+              number: 8080
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-service
+            port:
+              number: 80

@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: securestream
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: securestream-config
+  namespace: securestream
+data:
+  DB_HOST: postgres-service
+  REDIS_HOST: redis-service
+  POSTGRES_DB: securestream
+  POSTGRES_USER: securestream
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: securestream-secrets
+  namespace: securestream
+type: Opaque
+data:
+  # base64 encoded "securestream_pass"
+  POSTGRES_PASSWORD: c2VjdXJlc3RyZWFtX3Bhc3M=
+  # User must provide their own Groq API Key (base64 encoded)
+  GROQ_API_KEY: ""

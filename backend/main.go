@@ -107,18 +107,22 @@ type BruteForceCounter struct {
 }
 
 type TopologyNode struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Val    int    `json:"val"`
-	Group  int    `json:"group"`
-	Color  string `json:"color"`
-	Parent string `json:"parent,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Val         int    `json:"val"`
+	Group       int    `json:"group"`
+	Color       string `json:"color"`
+	Parent      string `json:"parent,omitempty"`
+	Description string `json:"description,omitempty"`
+	Tech        string `json:"tech,omitempty"`
+	NodeType    string `json:"node_type,omitempty"`
 }
 
 type TopologyLink struct {
 	Source string `json:"source"`
 	Target string `json:"target"`
 	Val    int    `json:"val"`
+	Label  string `json:"label,omitempty"`
 }
 
 type TopologyData struct {
@@ -149,31 +153,45 @@ type FlowEvent struct {
 
 // flowMap: Log kaynağını topoloji bağlantılarına eşleyen harita
 var flowMap = map[string][][2]string{
-	"internet":            {{"internet", "waf"}},
-	"waf":                 {{"internet", "waf"}, {"waf", "nginx"}},
-	"nginx":               {{"waf", "nginx"}, {"nginx", "auth_service"}},
-	"auth_service":        {{"nginx", "auth_service"}, {"auth_service", "db_master"}},
-	"product_service":     {{"nginx", "product_service"}, {"product_service", "redis"}, {"product_service", "db_replica"}},
-	"payment_service":     {{"nginx", "payment_service"}, {"payment_service", "pay_fraud"}},
-	"notification_service": {{"nginx", "notification_service"}},
-	"pay_stripe":          {{"payment_service", "pay_stripe"}, {"pay_stripe", "db_master"}},
-	"pay_paypal":          {{"payment_service", "pay_paypal"}, {"pay_paypal", "db_master"}},
-	"pay_fraud":           {{"payment_service", "pay_fraud"}, {"pay_fraud", "db_master"}},
-	"pay_invoice":         {{"payment_service", "pay_invoice"}, {"pay_invoice", "db_master"}},
-	"auth_jwt":            {{"auth_service", "auth_jwt"}, {"auth_jwt", "redis"}},
-	"auth_oauth":          {{"auth_service", "auth_oauth"}, {"auth_oauth", "db_master"}},
-	"auth_session":        {{"auth_service", "auth_session"}, {"auth_session", "redis"}},
-	"prod_search":         {{"product_service", "prod_search"}, {"prod_search", "elasticsearch"}},
-	"prod_inventory":      {{"product_service", "prod_inventory"}, {"prod_inventory", "db_replica"}},
-	"prod_recommend":      {{"product_service", "prod_recommend"}, {"prod_recommend", "redis"}},
-	"fn_stripe_validate":  {{"pay_stripe", "fn_stripe_validate"}},
-	"fn_stripe_charge":    {{"fn_stripe_validate", "fn_stripe_charge"}, {"fn_stripe_charge", "db_master"}},
-	"fn_stripe_refund":    {{"fn_stripe_validate", "fn_stripe_refund"}, {"fn_stripe_refund", "db_master"}},
-	"fn_stripe_webhook":   {{"fn_stripe_charge", "fn_stripe_webhook"}},
-	"db_master":           {{"auth_service", "db_master"}, {"db_master", "db_replica"}},
-	"db_replica":          {{"db_master", "db_replica"}},
-	"redis":               {{"product_service", "redis"}, {"auth_service", "redis"}},
-	"elasticsearch":       {{"prod_search", "elasticsearch"}},
+	"internet":             {{"internet", "waf"}, {"internet", "dns"}, {"internet", "cdn"}},
+	"dns":                  {{"internet", "dns"}, {"dns", "waf"}},
+	"cdn":                  {{"internet", "cdn"}, {"cdn", "s3_storage"}},
+	"waf":                  {{"internet", "waf"}, {"waf", "nginx"}},
+	"nginx":                {{"waf", "nginx"}, {"nginx", "api_gateway"}},
+	"api_gateway":          {{"nginx", "api_gateway"}, {"api_gateway", "auth_service"}},
+	"auth_service":         {{"api_gateway", "auth_service"}, {"auth_service", "db_master"}, {"auth_service", "redis"}},
+	"user_service":         {{"api_gateway", "user_service"}, {"user_service", "db_master"}},
+	"product_service":      {{"api_gateway", "product_service"}, {"product_service", "redis"}, {"product_service", "db_replica"}},
+	"order_service":        {{"api_gateway", "order_service"}, {"order_service", "db_master"}, {"order_service", "kafka"}},
+	"payment_service":      {{"api_gateway", "payment_service"}, {"payment_service", "pay_fraud"}, {"payment_service", "kafka"}},
+	"notification_service": {{"notification_service", "kafka"}, {"notification_service", "redis"}},
+	"analytics_service":    {{"api_gateway", "analytics_service"}, {"analytics_service", "elasticsearch"}, {"analytics_service", "kafka"}},
+	"logging_service":      {{"logging_service", "elasticsearch"}, {"logging_service", "kafka"}},
+	"pay_stripe":           {{"payment_service", "pay_stripe"}, {"pay_stripe", "db_master"}},
+	"pay_paypal":           {{"payment_service", "pay_paypal"}, {"pay_paypal", "db_master"}},
+	"pay_fraud":            {{"payment_service", "pay_fraud"}, {"pay_fraud", "db_master"}},
+	"pay_invoice":          {{"payment_service", "pay_invoice"}, {"pay_invoice", "db_master"}, {"pay_invoice", "s3_storage"}},
+	"auth_jwt":             {{"auth_service", "auth_jwt"}, {"auth_jwt", "redis"}},
+	"auth_oauth":           {{"auth_service", "auth_oauth"}, {"auth_oauth", "db_master"}},
+	"auth_session":         {{"auth_service", "auth_session"}, {"auth_session", "redis"}},
+	"auth_mfa":             {{"auth_service", "auth_mfa"}, {"auth_mfa", "redis"}},
+	"prod_search":          {{"product_service", "prod_search"}, {"prod_search", "elasticsearch"}},
+	"prod_inventory":       {{"product_service", "prod_inventory"}, {"prod_inventory", "db_replica"}},
+	"prod_recommend":       {{"product_service", "prod_recommend"}, {"prod_recommend", "redis"}},
+	"prod_pricing":         {{"product_service", "prod_pricing"}, {"prod_pricing", "redis"}},
+	"order_cart":           {{"order_service", "order_cart"}, {"order_cart", "redis"}},
+	"order_checkout":       {{"order_service", "order_checkout"}, {"order_checkout", "payment_service"}, {"order_checkout", "db_master"}},
+	"order_tracking":       {{"order_service", "order_tracking"}, {"order_tracking", "kafka"}},
+	"fn_stripe_validate":   {{"pay_stripe", "fn_stripe_validate"}},
+	"fn_stripe_charge":     {{"fn_stripe_validate", "fn_stripe_charge"}, {"fn_stripe_charge", "db_master"}},
+	"fn_stripe_refund":     {{"fn_stripe_validate", "fn_stripe_refund"}, {"fn_stripe_refund", "db_master"}},
+	"fn_stripe_webhook":    {{"fn_stripe_charge", "fn_stripe_webhook"}},
+	"db_master":            {{"auth_service", "db_master"}, {"db_master", "db_replica"}},
+	"db_replica":           {{"db_master", "db_replica"}},
+	"redis":                {{"product_service", "redis"}, {"auth_service", "redis"}},
+	"elasticsearch":        {{"prod_search", "elasticsearch"}, {"analytics_service", "elasticsearch"}},
+	"kafka":                {{"order_service", "kafka"}, {"payment_service", "kafka"}},
+	"s3_storage":           {{"cdn", "s3_storage"}, {"pay_invoice", "s3_storage"}},
 }
 
 func mapLogToFlows(entry LogEntry) []FlowEvent {

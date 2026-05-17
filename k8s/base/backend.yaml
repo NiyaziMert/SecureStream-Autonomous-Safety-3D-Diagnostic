@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: securestream
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: securestream
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        # REPLACE THIS with your GCR/Artifact Registry image path
+        image: gcr.io/PROJECT_ID/securestream-backend:latest
+        imagePullPolicy: Always
+        env:
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: securestream-config
+              key: DB_HOST
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: securestream-config
+              key: REDIS_HOST
+        - name: GROQ_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: securestream-secrets
+              key: GROQ_API_KEY
+        ports:
+        - containerPort: 8080
+          name: backend
+        readinessProbe:
+          httpGet:
+            path: /health # Backend health endpoint
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
