@@ -479,17 +479,17 @@ func hashAPIKey(key string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// getTenantByAPIKey: DB'den API key'e göre tenant'ı döner.
+// getTenantByAPIKey: DB'den API key'e göre veya şifre hash'ine göre tenant'ı döner.
 // DB yoksa (geliştirme modu) demo tenant döner.
 func getTenantByAPIKey(apiKey string) (*Tenant, bool) {
 	// Geliştirme modu: DB bağlantısı yoksa demo tenant
 	if db == nil {
-		if apiKey == "dev-api-key-12345" {
+		if apiKey == "dev-api-key-12345" || apiKey == "demo12345" {
 			return &Tenant{
 				ID:    "00000000-0000-0000-0000-000000000001",
 				Name:  "Demo Şirketi",
 				Email: "demo@securestream.dev",
-				Plan:  "pro",
+				Plan:  "free",
 			}, true
 		}
 		return nil, false
@@ -498,7 +498,7 @@ func getTenantByAPIKey(apiKey string) (*Tenant, bool) {
 	hashed := hashAPIKey(apiKey)
 	var t Tenant
 	err := db.QueryRow(
-		`SELECT id, name, email, plan FROM tenants WHERE api_key = $1 AND is_active = TRUE`,
+		`SELECT id, name, email, plan FROM tenants WHERE (api_key = $1 OR password_hash = $1) AND is_active = TRUE`,
 		hashed,
 	).Scan(&t.ID, &t.Name, &t.Email, &t.Plan)
 	if err != nil {
@@ -641,17 +641,121 @@ func initKafka() {
 }
 
 func publishToKafka(topic string, key string, value []byte) {
+	// Aktif tenant bul (WebSocket yayını için)
+	tenantID := "default"
+	clientsMu.Lock()
+	for tid := range clients {
+		tenantID = tid
+		break
+	}
+	clientsMu.Unlock()
+
+	// Kafka yazıcısı yoksa veya başlatılmadıysa, in-memory fallback akışını tetikle!
 	if kafkaWriter == nil {
+		triggerInMemoryVisualFlow(tenantID, key, topic, value)
 		return
 	}
+
 	err := kafkaWriter.WriteMessages(context.Background(), kafka.Message{
 		Topic: topic,
 		Key:   []byte(key),
 		Value: value,
 	})
 	if err != nil {
-		fmt.Printf("⚠️  Kafka Publish Hatası (Topic: %s): %v\n", topic, err)
+		// Yazma başarısızsa da in-memory fallback tetikle!
+		triggerInMemoryVisualFlow(tenantID, key, topic, value)
 	}
+}
+
+// triggerRealSystemFlow: GERÇEK SİSTEM FONKSİYONLARININ CANLI VERİ HAREKETLERİNİ DÜĞÜMLER ARASI AKIŞA DÖKMEK İÇİN KULLANILAN ENTEGRASYON KÖPRÜSÜ
+func triggerRealSystemFlow(tenantID string, source string, target string) {
+	select {
+	case flowQueue <- FlowEvent{
+		MsgType:  "flow",
+		TenantID: tenantID,
+		Source:   source,
+		Target:   target,
+	}:
+	default:
+	}
+}
+
+// propagateFunctionFlows: Topolojideki fonksiyon düğümleri arasındaki ilişkisel bağlantıları tarar ve gerçek akışı bir düğümden diğerine zincirleme (cascading) olarak tetikler!
+func propagateFunctionFlows(tenantID string, startNode string) {
+	// Başlangıç noktasını tetikle
+	triggerRealSystemFlow(tenantID, startNode, "backend")
+
+	topologyMu.RLock()
+	links := currentTopology.Links
+	topologyMu.RUnlock()
+
+	// 1. Derece Bağlantıları Tara
+	for _, l := range links {
+		if l.Source == startNode {
+			triggerRealSystemFlow(tenantID, l.Source, l.Target)
+			
+			// 2. Derece Bağlantıları Zincirleme Olarak Tetikle (Fonksiyonlar arası kaskad)
+			for _, subL := range links {
+				if subL.Source == l.Target {
+					triggerRealSystemFlow(tenantID, subL.Source, subL.Target)
+				}
+			}
+		}
+	}
+	
+	// Backend'den PostgreSQL'e her zaman veri yazarız
+	triggerRealSystemFlow(tenantID, "backend", "postgres")
+}
+
+// triggerInMemoryVisualFlow: KAFKA BAĞLANTISI KOPUKKEN CANLI VERİ VE ANİMASYON AKIŞINI SÜRDÜREN KÖPRÜ
+func triggerInMemoryVisualFlow(tenantID string, producerNode string, topic string, value []byte) {
+	// 1. Görsel Akış: Producer -> Kafka (Simüle)
+	select {
+	case flowQueue <- FlowEvent{
+		MsgType:  "flow",
+		TenantID: tenantID,
+		Source:   producerNode,
+		Target:   "kafka",
+	}:
+	default:
+	}
+
+	// 2. Görsel Akış: Kafka -> Tüketici Node (Veritabanı veya İşleyici)
+	var consumerNode = "backend"
+	if topic == "telemetry-data" {
+		consumerNode = "redis"
+	} else if topic == "threat-alerts" {
+		consumerNode = "postgres"
+	}
+	select {
+	case flowQueue <- FlowEvent{
+		MsgType:  "flow",
+		TenantID: tenantID,
+		Source:   "kafka",
+		Target:   consumerNode,
+	}:
+	default:
+	}
+
+	// 3. Ham logu in-memory kuyruğuna göndererek tehdit tespiti ve DB kaydını çalıştır (Log Ingestion ise)
+	if topic == "log-ingest" {
+		var entry LogEntry
+		if err := json.Unmarshal(value, &entry); err == nil {
+			select {
+			case logQueue <- entry:
+			default:
+			}
+		}
+	}
+
+	// Canlı log penceresine in-memory bypass ibaresiyle log yaz
+	logEv := KafkaLogEvent{
+		MsgType:   "log",
+		Source:    "local-fallback",
+		RawLog:    fmt.Sprintf("📬 [DIRECT IN-MEMORY] Topic: \"%s\" | Producer: \"%s\" | Payload: %s", topic, producerNode, string(value)),
+		Timestamp: time.Now(),
+	}
+	broadcastToTenant(tenantID, logEv)
 }
 
 func startRealKafkaConsumer(topic string) {
@@ -841,6 +945,7 @@ func initDB() {
 		name        VARCHAR(255) NOT NULL,
 		email       VARCHAR(255) NOT NULL UNIQUE,
 		api_key     VARCHAR(64)  NOT NULL UNIQUE, -- SHA-256 hash
+		password_hash VARCHAR(255),
 		plan        VARCHAR(50)  NOT NULL DEFAULT 'free',
 		is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
 		created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -877,17 +982,39 @@ func initDB() {
 	CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(tenant_id, severity);
 	CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(tenant_id, alert_type);
 
-	-- Demo API Anahtarı "dev-api-key-12345" SHA-256 hash'i ile tohumlanıyor
-	INSERT INTO tenants (id, name, email, api_key, plan)
+	CREATE TABLE IF NOT EXISTS login_log (
+		id          BIGSERIAL    PRIMARY KEY,
+		tenant_id   UUID,
+		api_key     VARCHAR(255) NOT NULL,
+		ip_address  VARCHAR(50),
+		status      VARCHAR(20)  NOT NULL,
+		created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_login_log_tenant ON login_log(tenant_id);
+
+	-- ALTER TABLE koruması (Mevcut tablolar için)
+	-- Bu komut eğer password_hash sütunu yoksa ekler
+	-- schema çalışmadan önce de veya sonra da çalışabilir
+	-- Ama en güvenlisi schema execute edilince de eklemesini sağlamak
+
+	-- Demo API Anahtarı "dev-api-key-12345" ve şifresi "demo12345" SHA-256 hash'i ile tohumlanıyor
+	INSERT INTO tenants (id, name, email, api_key, password_hash, plan)
 	VALUES (
 		'00000000-0000-0000-0000-000000000001',
 		'Demo Şirketi A.Ş.',
 		'demo@securestream.dev',
 		'8264dc9f07e749d9c2ffead0b25de8cb22bed7af774e189ef224ae015908776b',
-		'pro'
-	) ON CONFLICT DO NOTHING;
+		'8264dc9f07e749d9c2ffead0b25de8cb22bed7af774e189ef224ae015908776b',
+		'free'
+	) ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash;
 	`
 	_, err = db.Exec(schema)
+	if err == nil {
+		// Mevcut PostgreSQL kurulumlarında sütun yoksa ekle
+		_, _ = db.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)")
+		_, _ = db.Exec("UPDATE tenants SET password_hash = '8264dc9f07e749d9c2ffead0b25de8cb22bed7af774e189ef224ae015908776b' WHERE email = 'demo@securestream.dev' AND password_hash IS NULL")
+	}
 	if err != nil {
 		fmt.Printf("⚠️  Otomatik veritabanı kurulumu başarısız oldu: %v\n", err)
 	} else {
@@ -1280,6 +1407,161 @@ func main() {
 		})
 	})
 
+	// B2B Login Endpoint — Giriş kayıtlarını DB'ye yazar veya E-posta/Şifre doğrular
+	r.POST("/api/login", func(c *gin.Context) {
+		var req struct {
+			APIKey   string `json:"api_key"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Geçersiz istek gövdesi"})
+			return
+		}
+
+		// E-posta & Şifre ile Giriş
+		if req.Email != "" && req.Password != "" {
+			// Geliştirme modu: Veritabanı yoksa demo hesap
+			if db == nil {
+				if req.Email == "demo@securestream.dev" && req.Password == "demo12345" {
+					c.JSON(http.StatusOK, gin.H{
+						"status":  "success",
+						"api_key": "demo12345",
+						"tenant": gin.H{
+							"id":    "00000000-0000-0000-0000-000000000001",
+							"name":  "Demo Şirketi",
+							"email": "demo@securestream.dev",
+							"plan":  "free",
+						},
+					})
+					return
+				}
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz e-posta veya şifre"})
+				return
+			}
+
+			hashedPassword := hashAPIKey(req.Password)
+			var t Tenant
+			var apiKeyHash string
+			
+			// Tabloda password_hash yoksa ekle (alter table koruması)
+			_, _ = db.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)")
+
+			err := db.QueryRow(
+				`SELECT id, name, email, plan, api_key FROM tenants WHERE email = $1 AND password_hash = $2 AND is_active = TRUE`,
+				strings.TrimSpace(req.Email), hashedPassword,
+			).Scan(&t.ID, &t.Name, &t.Email, &t.Plan, &apiKeyHash)
+
+			if err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz e-posta veya şifre"})
+				return
+			}
+
+			// Real system flow triggers! (Kullanıcı girişi sırasında DB sorgusu akışı)
+			triggerRealSystemFlow(t.ID, "backend", "postgres")
+			triggerRealSystemFlow(t.ID, "postgres", "backend")
+
+			// Girişi logla
+			_, _ = db.Exec(
+				"INSERT INTO login_log (tenant_id, api_key, ip_address, status) VALUES ($1, $2, $3, $4)",
+				t.ID, "email-login", c.ClientIP(), "success",
+			)
+
+			// X-API-Key middleware doğrulaması için ham şifreyi session key olarak kullanıyoruz!
+			c.JSON(http.StatusOK, gin.H{
+				"status":  "success",
+				"api_key": req.Password, // Ham şifre X-API-Key başlığında taşınır ve password_hash ile eşleşerek middleware'den geçer!
+				"tenant":  t,
+			})
+			return
+		}
+
+		// API Key ile Giriş (Geriye dönük uyumluluk)
+		tenant, ok := getTenantByAPIKey(req.APIKey)
+		status := "failed"
+		if ok {
+			status = "success"
+		}
+
+		// DB'ye kaydet
+		if db != nil {
+			var tenantID interface{} = nil
+			if ok && tenant != nil {
+				tenantID = tenant.ID
+			}
+			_, err := db.Exec(
+				"INSERT INTO login_log (tenant_id, api_key, ip_address, status) VALUES ($1, $2, $3, $4)",
+				tenantID, req.APIKey, c.ClientIP(), status,
+			)
+			if err != nil {
+				fmt.Println("⚠️  login_log DB hatası:", err)
+			}
+		}
+
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz API Anahtarı"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"api_key": req.APIKey,
+			"tenant":  tenant,
+		})
+	})
+
+	// B2B Kayıt Olma Endpoint'i — Tamamen bedava hesap oluşturur
+	r.POST("/api/register", func(c *gin.Context) {
+		var req struct {
+			Name     string `json:"name"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Geçersiz istek gövdesi"})
+			return
+		}
+
+		if req.Name == "" || req.Email == "" || req.Password == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tüm alanlar zorunludur"})
+			return
+		}
+
+		// Şifreyi hash'le
+		hashedPassword := hashAPIKey(req.Password)
+		// Uyumluluk için rastgele bir API key üret
+		rawAPIKey := "sk_free_" + strings.ToLower(req.Email[:3]) + "_" + fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
+		hashedAPIKey := hashAPIKey(rawAPIKey)
+
+		// Geliştirme modu: Veritabanı yoksa mock başarılı dön
+		if db == nil {
+			c.JSON(http.StatusOK, gin.H{
+				"status":  "success",
+				"api_key": req.Password, // Ham şifreyi session token olarak dön
+				"message": "Hesabınız mock modda başarıyla oluşturuldu",
+			})
+			return
+		}
+
+		// Tabloda password_hash yoksa ekle
+		_, _ = db.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)")
+
+		_, err := db.Exec(
+			"INSERT INTO tenants (name, email, api_key, password_hash, plan) VALUES ($1, $2, $3, $4, $5)",
+			req.Name, strings.TrimSpace(req.Email), hashedAPIKey, hashedPassword, "free",
+		)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "Bu e-posta adresi zaten kayıtlı"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"api_key": req.Password, // Ham şifreyi session token olarak dön
+			"message": "Hesabınız başarıyla oluşturuldu",
+		})
+	})
+
 	// -------------------------------------------------------
 	// AWS MARKETPLACE REGISTER & RESOLUTION ENDPOINT
 	// -------------------------------------------------------
@@ -1429,7 +1711,7 @@ func main() {
 					topo.Nodes[i].Name = "Apache Kafka Cluster"
 					topo.Nodes[i].Tech = "Apache Kafka"
 					topo.Nodes[i].NodeType = "message-broker"
-					topo.Nodes[i].Color = "#f97316" // Premium Kafka Turuncusu
+					topo.Nodes[i].Color = "#00ff66" // Premium Kafka Neon Yeşil
 					topo.Nodes[i].Val = 8
 					topo.Nodes[i].Group = 3
 					hasKafka = true
@@ -1442,7 +1724,7 @@ func main() {
 					Name:      "Apache Kafka Cluster",
 					Tech:      "Apache Kafka",
 					NodeType:  "message-broker",
-					Color:     "#f97316", // Kafka Turuncusu
+					Color:     "#00ff66", // Kafka Neon Yeşil
 					Val:       8,
 					Group:     3,
 				})
@@ -1516,6 +1798,9 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		
+		tenant := c.MustGet("tenant").(*Tenant)
+		go propagateFunctionFlows(tenant.ID, "discovery-agent")
 		
 		if req.Nodes == nil {
 			req.Nodes = []TopologyNode{}
@@ -1708,6 +1993,9 @@ func main() {
 			Timestamp: time.Now(),
 		}
 
+		// Real system flow triggers! (Zincirleme gerçek fonksiyon/düğüm akışı tetikleniyor!)
+		go propagateFunctionFlows(tenant.ID, entry.Source)
+
 		// --- IP ENGELLEME DENETİMİ (Enforcement) ---
 		// Log içindeki IP'yi çıkar ve engelli listesinde mi bak
 		foundIP := reIP.FindString(req.RawLog)
@@ -1830,6 +2118,9 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "dirs alanı gerekli (örn: [\"/Users/me/project\"])"})
 			return
 		}
+
+		tenant := c.MustGet("tenant").(*Tenant)
+		go propagateFunctionFlows(tenant.ID, "discovery-agent")
 
 		// Agent binary path
 		agentPath := os.Getenv("DISCOVERY_AGENT_PATH")

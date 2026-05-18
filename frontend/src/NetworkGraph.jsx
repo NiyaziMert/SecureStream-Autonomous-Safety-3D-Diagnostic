@@ -22,7 +22,7 @@ function getNodeColor(node) {
   return node.color || '#64748b';
 }
 
-export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeSelect }) {
+export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], alerts = [], onNodeSelect }) {
   const [allData, setAllData] = useState({ nodes: [], links: [] });
   const [kafkaEnabled, setKafkaEnabled] = useState(false);
   const [expandedNodes, setExpandedNodes] = useState(new Set());
@@ -84,7 +84,6 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
     return () => clearInterval(iv);
   }, [loadTopology]);
 
-
   // Force re-render for animations
   useEffect(() => {
     let id;
@@ -122,13 +121,16 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
     return { nodes: vis, links: visLinks };
   }, [allData, expandedNodes]);
 
-  // Configure d3 forces for better spacing
+  // Configure d3 forces for tighter, snugger spacing (FAZ 5.1 Sıkı Topoloji)
   useEffect(() => {
     if (!fgRef.current) return;
     const fg = fgRef.current;
-    fg.d3Force('charge').strength(-400).distanceMax(600);
-    fg.d3Force('link').distance(90).strength(0.3);
-    fg.d3Force('center').strength(0.05);
+    // Charge: Düşük itme kuvveti ile nodeları birbirine yaklaştırıyoruz (-400 -> -160)
+    fg.d3Force('charge').strength(-160).distanceMax(500);
+    // Link: Kısa ve güçlü bağlantılar (90 -> 50)
+    fg.d3Force('link').distance(50).strength(0.4);
+    // Center: Güçlü merkezleme kuvvetiyle dağılmayı önlüyoruz (0.05 -> 0.1)
+    fg.d3Force('center').strength(0.1);
     fg.d3ReheatSimulation();
   }, [visibleData]);
 
@@ -162,6 +164,20 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
     return s;
   }, [activeFlows]);
 
+  // Grupları ve liderlerini önceden hesapla (Enclave Çizimi için)
+  const groupLeaders = useMemo(() => {
+    const leaders = {};
+    const nodes = visibleData.nodes;
+    nodes.forEach(n => {
+      const g = n.group || 0;
+      if (!leaders[g] || n.id < leaders[g].id) {
+        leaders[g] = n;
+      }
+    });
+    return leaders;
+  }, [visibleData.nodes]);
+
+  // Node Canvas render döngüsü
   const nodeCanvasObject = useCallback((node, ctx, globalScale) => {
     const x = node.x, y = node.y;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -173,15 +189,117 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
     const nodes = allData?.nodes || [];
     const hasKids = nodes.some(n => n.parent === node.id);
     const isExp = expandedNodes.has(node.id);
-    const baseR = Math.sqrt(node.val || 4) * 2.5;
-    const r = baseR * (isHov ? 1.3 : isSel ? 1.2 : 1);
+
+    // ── GÖRSEL BÜYÜTME (FAZ 5.1: 2.5 Kat Daha Büyük) ──
+    const baseR = Math.sqrt(node.val || 4) * 4.5 + 4; 
+    const r = baseR * (isHov ? 1.25 : isSel ? 1.15 : 1);
+
+    // ── 🛡️ SOYUT ŞEKİL BİRLEŞTİRME ENKLAVE (HUD SHAPE MERGING) ──
+    // Grubun lideri olan düğüm, o gruba ait tüm düğümleri kapsayan devasa koruyucu enklave hücresini çizer!
+    const gID = node.group || 0;
+    const leader = groupLeaders[gID];
+    
+    if (leader && leader.id === node.id) {
+      const groupNodes = visibleData.nodes.filter(n => (n.group || 0) === gID && Number.isFinite(n.x) && Number.isFinite(n.y));
+      
+      if (groupNodes.length >= 2) {
+        // 1. Ağırlık Merkezi (Center of Mass) Hesapla
+        let sumX = 0, sumY = 0;
+        groupNodes.forEach(n => { sumX += n.x; sumY += n.y; });
+        const cx = sumX / groupNodes.length;
+        const cy = sumY / groupNodes.length;
+
+        // 2. Maksimum Uzaklığı (Yarıçap) Bul
+        let maxDist = 0;
+        groupNodes.forEach(n => {
+          const dist = Math.sqrt((n.x - cx) ** 2 + (n.y - cy) ** 2);
+          if (dist > maxDist) maxDist = dist;
+        });
+        
+        // Düğümleri içine alacak genişlikte bir yarıçap + tampon payı
+        const enclaveR = maxDist + baseR + 22;
+
+        // 3. Grubun Tehdit Altında Olup Olmadığını Kontrol Et
+        const hasThreat = groupNodes.some(n => 
+          alerts.some(a => a.source === n.id || a.message?.includes(n.name || n.id))
+        );
+
+        // 4. Enclave Türünü ve Renklerini Ayarla
+        let enclaveColor = '#06b6d4'; // Varsayılan: Cyan (Algorithmic Pipeline)
+        let enclaveLabel = '[⚡ ALGORITHMIC CIRCUIT PIPELINE]';
+        
+        if (gID === 1) {
+          enclaveColor = '#64748b'; // Gateway (Cobalt-Gray)
+          enclaveLabel = '[🌐 EDGE GATEWAY SECURITY CELL]';
+        } else if (gID === 3) {
+          enclaveColor = '#22c55e'; // Database (Secure Green)
+          enclaveLabel = '[🛡️ DATABASE SECURE ENCLAVE]';
+        }
+
+        // Eğer sızma/tehdit varsa enklave anında şekil değiştirir ve kızarır!
+        if (hasThreat) {
+          enclaveColor = '#ef4444'; // Alarm Crimson Red
+          enclaveLabel = '[⚠️ THREAT BREACH ZONE DETECTED]';
+        }
+
+        ctx.save();
+        
+        // A. Holografik Arka Plan Gradient Dolgusu (Abstract Bubble)
+        const bubbleGrad = ctx.createRadialGradient(cx, cy, enclaveR * 0.2, cx, cy, enclaveR);
+        bubbleGrad.addColorStop(0, enclaveColor + '08');
+        bubbleGrad.addColorStop(0.5, enclaveColor + '03');
+        bubbleGrad.addColorStop(1, enclaveColor + '00');
+        ctx.fillStyle = bubbleGrad;
+        
+        ctx.beginPath();
+        if (hasThreat) {
+          // Tehdit altında bozuk, pürüzlü, köşeli bir şekil çiz (Tehdit Algısı)
+          const points = 7;
+          for (let i = 0; i < points; i++) {
+            const angle = (i / points) * Math.PI * 2 + (Date.now() * 0.0005);
+            // Genlikte dalgalanma yaparak tehdit hissi uyandırıyoruz
+            const offset = Math.sin(angle * 3 + (Date.now() * 0.008)) * 8;
+            const px = cx + Math.cos(angle) * (enclaveR + offset);
+            const py = cy + Math.sin(angle) * (enclaveR + offset);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+        } else {
+          // Güvendeyken dairesel, stabil, akışkan hücre
+          ctx.arc(cx, cy, enclaveR, 0, Math.PI * 2);
+        }
+        ctx.fill();
+
+        // B. Pulsing Neon Hücre Sınır Hattı
+        const pulseT = Date.now() * 0.003;
+        ctx.strokeStyle = enclaveColor;
+        ctx.lineWidth = hasThreat ? 1.8 : 0.8;
+        ctx.shadowColor = enclaveColor;
+        ctx.shadowBlur = 6 + Math.sin(pulseT) * 4;
+        ctx.setLineDash(gID === 1 ? [6, 6] : gID === 3 ? [] : [3, 5]); // Gateway kesikli, DB düz çizgi
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.shadowBlur = 0; // Gölge temizliği
+
+        // C. Soyut Enclave Hücre Etiketi (Premium Cyberpunk HUD)
+        const hudFontSize = Math.max(7 / globalScale, 2.2);
+        ctx.font = `600 ${hudFontSize}px "Courier New", monospace`;
+        ctx.fillStyle = enclaveColor + 'cc';
+        ctx.textAlign = 'center';
+        ctx.fillText(enclaveLabel, cx, cy - enclaveR - 6);
+
+        ctx.restore();
+      }
+    }
+
+    // ── NODE RENDER KISMI ──
 
     // Outer glow
     if (isAct || isSel) {
       const t = Date.now() * 0.005;
-      const pulseR = r + 8 + Math.sin(t) * 4;
+      const pulseR = r + 9 + Math.sin(t) * 4;
       const grad = ctx.createRadialGradient(x, y, r, x, y, pulseR);
-      grad.addColorStop(0, color + '50');
+      grad.addColorStop(0, color + '60');
       grad.addColorStop(1, color + '00');
       ctx.beginPath(); ctx.arc(x, y, pulseR, 0, Math.PI * 2);
       ctx.fillStyle = grad; ctx.fill();
@@ -200,34 +318,35 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
     // Main circle
     const grad2 = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, 0, x, y, r);
     grad2.addColorStop(0, color + 'ee');
-    grad2.addColorStop(1, color + '88');
+    grad2.addColorStop(1, color + '99');
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fillStyle = grad2; ctx.fill();
-    ctx.strokeStyle = isSel ? '#ffffff' : isHov ? '#e2e8f0' : color + '60';
-    ctx.lineWidth = isSel ? 2 : isHov ? 1.5 : 0.5;
+    ctx.strokeStyle = isSel ? '#ffffff' : isHov ? '#e2e8f0' : color + '70';
+    ctx.lineWidth = isSel ? 2.5 : isHov ? 1.8 : 0.8;
     ctx.stroke();
 
     // Expand ring
     if (hasKids) {
-      ctx.beginPath(); ctx.arc(x, y, r + 3, 0, Math.PI * 2);
-      ctx.strokeStyle = isExp ? '#22c55e90' : '#f59e0b90';
-      ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(x, y, r + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = isExp ? '#22c55ea0' : '#06b6d4a0';
+      ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]); ctx.stroke(); ctx.setLineDash([]);
     }
 
-    // Label
+    // Label (Premium typography & box)
     const label = node.name || node.id;
-    const fontSize = Math.max(10 / globalScale, 2.5);
-    ctx.font = `${isSel ? '600' : '500'} ${fontSize}px Inter, sans-serif`;
+    const fontSize = Math.max(10.5 / globalScale, 3);
+    ctx.font = `${isSel ? '700' : '600'} ${fontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     const tw = ctx.measureText(label).width;
-    const pad = 2;
-    ctx.fillStyle = 'rgba(5,10,20,0.75)';
-    drawRoundRect(ctx, x - tw / 2 - pad, y + r + 4, tw + pad * 2, fontSize + pad * 2, 2);
+    const pad = 3;
+    ctx.fillStyle = 'rgba(5,10,20,0.82)';
+    drawRoundRect(ctx, x - tw / 2 - pad, y + r + 5, tw + pad * 2, fontSize + pad * 2, 3);
     ctx.fill();
-    ctx.fillStyle = isSel || isHov ? '#ffffff' : '#b0bec5';
-    ctx.fillText(label, x, y + r + 4 + fontSize / 2 + pad);
-  }, [hoveredNode, selectedNode, activeNodeSet, allData, expandedNodes]);
+    ctx.fillStyle = isSel || isHov ? '#ffffff' : '#cfd8dc';
+    ctx.fillText(label, x, y + r + 5 + fontSize / 2 + pad);
+  }, [hoveredNode, selectedNode, activeNodeSet, allData, expandedNodes, groupLeaders, visibleData.nodes, alerts]);
 
+  // Link Canvas render döngüsü
   const linkCanvasObject = useCallback((link, ctx, globalScale) => {
     const sx = link.source.x, sy = link.source.y;
     const tx = link.target.x, ty = link.target.y;
@@ -237,27 +356,27 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
     if (!active) {
       // Inactive/Standard links: subtle, sleek line
       ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty);
-      ctx.strokeStyle = 'rgba(100, 116, 139, 0.35)';
+      ctx.strokeStyle = 'rgba(100, 116, 139, 0.28)';
       ctx.lineWidth = 1.0;
       ctx.stroke();
     } else {
       // Active links: Premium neon glowing laser line
       ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty);
       ctx.strokeStyle = '#22d3ee';
-      ctx.lineWidth = 3.0;
+      ctx.lineWidth = 3.5;
       ctx.shadowColor = '#06b6d4';
-      ctx.shadowBlur = 12;
+      ctx.shadowBlur = 14;
       ctx.stroke();
       ctx.shadowBlur = 0; // reset shadow immediately to avoid performance cost
 
       // Glowing core inner light line
       ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty);
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.0;
+      ctx.lineWidth = 1.2;
       ctx.stroke();
 
       // Energetic flowing traveling particles (energy pulses) with glow
-      const t = (Date.now() % 1200) / 1200; // Faster transmission flow
+      const t = (Date.now() % 1000) / 1000; // Fast energetic ripple transmission
       const numParticles = 4;
       for (let i = 0; i < numParticles; i++) {
         const p = (t + i / numParticles) % 1;
@@ -265,10 +384,10 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
         const py = sy + (ty - sy) * p;
 
         ctx.beginPath();
-        ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+        ctx.arc(px, py, 4.0, 0, Math.PI * 2);
         ctx.fillStyle = '#4ade80';
         ctx.shadowColor = '#4ade80';
-        ctx.shadowBlur = 8;
+        ctx.shadowBlur = 9;
         ctx.fill();
         ctx.shadowBlur = 0; // reset
       }
@@ -279,7 +398,7 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
     if (label && globalScale > 1.2) {
       const mx = (sx + tx) / 2, my = (sy + ty) / 2;
       const fontSize = Math.max(7 / globalScale, 2);
-      ctx.font = `400 ${fontSize}px Inter, sans-serif`;
+      ctx.font = `400 ${fontSize}px system-ui, sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       const tw = ctx.measureText(label).width;
       // Background
@@ -308,9 +427,9 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
           <button
             onClick={handleToggleKafka}
             style={{
-              background: kafkaEnabled ? 'rgba(249, 115, 22, 0.2)' : 'rgba(255,255,255,0.03)',
-              border: kafkaEnabled ? '1px solid #f97316' : '1px solid rgba(255,255,255,0.1)',
-              color: kafkaEnabled ? '#fb923c' : '#94a3b8',
+              background: kafkaEnabled ? 'rgba(0, 255, 102, 0.2)' : 'rgba(255,255,255,0.03)',
+              border: kafkaEnabled ? '1px solid #00ff66' : '1px solid rgba(255,255,255,0.1)',
+              color: kafkaEnabled ? '#82ffb0' : '#94a3b8',
               borderRadius: '4px',
               padding: '4px 8px',
               fontSize: '11px',
@@ -319,8 +438,8 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
               alignItems: 'center',
               gap: '6px',
               fontWeight: '600',
-              textShadow: kafkaEnabled ? '0 0 8px rgba(249, 115, 22, 0.4)' : 'none',
-              boxShadow: kafkaEnabled ? '0 0 10px rgba(249, 115, 22, 0.15)' : 'none',
+              textShadow: kafkaEnabled ? '0 0 8px rgba(0, 255, 102, 0.4)' : 'none',
+              boxShadow: kafkaEnabled ? '0 0 10px rgba(0, 255, 102, 0.15)' : 'none',
               transition: 'all 0.3s ease-in-out',
               userSelect: 'none'
             }}
@@ -330,8 +449,8 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
               width: '6px',
               height: '6px',
               borderRadius: '50%',
-              background: kafkaEnabled ? '#f97316' : '#475569',
-              boxShadow: kafkaEnabled ? '0 0 8px #f97316' : 'none',
+              background: kafkaEnabled ? '#00ff66' : '#475569',
+              boxShadow: kafkaEnabled ? '0 0 8px #00ff66' : 'none',
               transition: 'all 0.3s ease-in-out'
             }} />
             {kafkaEnabled ? 'Kafka Stream: ACTIVE' : 'Kafka Stream: INACTIVE'}
@@ -360,7 +479,7 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
         graphData={visibleData}
         nodeCanvasObject={nodeCanvasObject}
         nodePointerAreaPaint={(node, color, ctx) => {
-          const r = Math.sqrt(node.val || 4) * 3;
+          const r = Math.sqrt(node.val || 4) * 5.5 + 4;
           ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
           ctx.fillStyle = color; ctx.fill();
         }}
@@ -369,12 +488,12 @@ export default function NetworkGraph({ apiKey, apiUrl, activeFlows = [], onNodeS
         onNodeHover={n => setHoveredNode(n?.id || null)}
         backgroundColor="rgba(0,0,0,0)"
         enableNodeDrag
-        d3AlphaDecay={0.01}
-        d3VelocityDecay={0.25}
-        warmupTicks={120}
-        cooldownTicks={400}
+        d3AlphaDecay={0.008}
+        d3VelocityDecay={0.22}
+        warmupTicks={150}
+        cooldownTicks={500}
         d3Force="charge"
-        d3ForceStrength={-350}
+        d3ForceStrength={-160}
         onEngineStop={() => {
           if (fgRef.current) fgRef.current.zoomToFit(400, 60);
         }}
