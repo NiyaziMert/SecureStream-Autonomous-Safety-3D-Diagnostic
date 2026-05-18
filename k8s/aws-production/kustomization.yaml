@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base
+  - aws-metering-irsa.yaml
+  - aws-hpa.yaml
+
+patches:
+  - path: aws-ingress-patch.yaml
+    target:
+      group: networking.k8s.io
+      version: v1
+      kind: Ingress
+      name: securestream-ingress
+
+images:
+  - name: securestream-backend
+    newName: 123456789012.dkr.ecr.eu-west-1.amazonaws.com/securestream-backend
+    newTag: v1.0.0
+  - name: securestream-frontend
+    newName: 123456789012.dkr.ecr.eu-west-1.amazonaws.com/securestream-frontend
+    newTag: v1.0.0

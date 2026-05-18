@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: securestream-backend-sa
+  namespace: default
+  annotations:
+    # IAM Role for Service Accounts (IRSA) - EKS AWS Store Integration
+    # This role gives the container permission to call marketplace:ResolveCustomer and marketplace:BatchMeterUsage
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/SecureStreamAWSStoreMeteringRole

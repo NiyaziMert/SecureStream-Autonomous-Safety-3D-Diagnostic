@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -25,6 +27,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // ---------------------------------------------------------
@@ -479,6 +482,100 @@ func hashAPIKey(key string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// hashPassword: Şifreyi bcrypt kullanarak güvenli şekilde hashler (production-ready).
+func hashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return string(bytes), err
+}
+
+// checkPasswordHash: Bcrypt şifre hash'ini girilen şifre ile doğrular.
+func checkPasswordHash(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
+}
+
+// ── JWT UTILITY ENGINE (PRODUCTION SECURE AUTHENTICATION) ──
+
+type JWTClaims struct {
+	TenantID string `json:"tenant_id"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Plan     string `json:"plan"`
+	Exp      int64  `json:"exp"`
+}
+
+func getEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
+}
+
+var jwtSecret = []byte(getEnv("JWT_SECRET", "securestream-super-secret-key-98765-enterprise"))
+
+// generateJWT: Tenant bilgilerini güvenli bir şekilde HMAC-SHA256 ile imzalanmış JWT token'ına dönüştürür.
+func generateJWT(tenantID, name, email, plan string) (string, error) {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	
+	claims := JWTClaims{
+		TenantID: tenantID,
+		Name:     name,
+		Email:    email,
+		Plan:     plan,
+		Exp:      time.Now().Add(24 * time.Hour).Unix(), // 24 saat geçerli session
+	}
+	
+	claimsBytes, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	payload := base64.RawURLEncoding.EncodeToString(claimsBytes)
+	
+	unsignedToken := header + "." + payload
+	
+	// Signature: HMAC-SHA256
+	h := hmac.New(sha256.New, jwtSecret)
+	h.Write([]byte(unsignedToken))
+	signature := base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+	
+	return unsignedToken + "." + signature, nil
+}
+
+// parseJWT: Gelen JWT token'ını doğrular, süresini kontrol eder ve içindeki iddiaları (claims) çözer.
+func parseJWT(tokenString string) (*JWTClaims, error) {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("geçersiz token formatı")
+	}
+	
+	unsignedToken := parts[0] + "." + parts[1]
+	
+	h := hmac.New(sha256.New, jwtSecret)
+	h.Write([]byte(unsignedToken))
+	expectedSignature := base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+	
+	if parts[2] != expectedSignature {
+		return nil, fmt.Errorf("geçersiz token imzası")
+	}
+	
+	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	
+	var claims JWTClaims
+	if err := json.Unmarshal(claimsBytes, &claims); err != nil {
+		return nil, err
+	}
+	
+	// Expiry kontrolü
+	if time.Now().Unix() > claims.Exp {
+		return nil, fmt.Errorf("token süresi dolmuş")
+	}
+	
+	return &claims, nil
+}
+
 // getTenantByAPIKey: DB'den API key'e göre veya şifre hash'ine göre tenant'ı döner.
 // DB yoksa (geliştirme modu) demo tenant döner.
 func getTenantByAPIKey(apiKey string) (*Tenant, bool) {
@@ -520,14 +617,31 @@ func authMiddleware() gin.HandlerFunc {
 		}
 
 		if apiKey == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "API Key gerekli (X-API-Key header)"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "API Key veya JWT oturum anahtarı gerekli (X-API-Key header)"})
 			c.Abort()
 			return
 		}
 
-		tenant, ok := getTenantByAPIKey(strings.TrimSpace(apiKey))
+		var tenant *Tenant
+		var ok bool
+		
+		apiKey = strings.TrimSpace(apiKey)
+		// 1. JWT Token kontrolü ve doğrulaması (UI oturumları için yüksek performanslı ve güvenli)
+		if claims, err := parseJWT(apiKey); err == nil {
+			tenant = &Tenant{
+				ID:    claims.TenantID,
+				Name:  claims.Name,
+				Email: claims.Email,
+				Plan:  claims.Plan,
+			}
+			ok = true
+		} else {
+			// 2. Klasik API Key veya Legacy Şifre kontrolü (Dış entegrasyon agent'ları ve curl çağrıları için)
+			tenant, ok = getTenantByAPIKey(apiKey)
+		}
+
 		if !ok {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Geçersiz API Key"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "Geçersiz API Key veya oturum anahtarı"})
 			c.Abort()
 			return
 		}
@@ -1421,12 +1535,13 @@ func main() {
 
 		// E-posta & Şifre ile Giriş
 		if req.Email != "" && req.Password != "" {
-			// Geliştirme modu: Veritabanı yoksa demo hesap
+			// Geliştirme modu: Veritabanı yoksa demo hesap + JWT
 			if db == nil {
 				if req.Email == "demo@securestream.dev" && req.Password == "demo12345" {
+					token, _ := generateJWT("00000000-0000-0000-0000-000000000001", "Demo Şirketi", "demo@securestream.dev", "free")
 					c.JSON(http.StatusOK, gin.H{
 						"status":  "success",
-						"api_key": "demo12345",
+						"api_key": token,
 						"tenant": gin.H{
 							"id":    "00000000-0000-0000-0000-000000000001",
 							"name":  "Demo Şirketi",
@@ -1440,19 +1555,39 @@ func main() {
 				return
 			}
 
-			hashedPassword := hashAPIKey(req.Password)
 			var t Tenant
 			var apiKeyHash string
+			var storedHash string
 			
 			// Tabloda password_hash yoksa ekle (alter table koruması)
 			_, _ = db.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)")
 
 			err := db.QueryRow(
-				`SELECT id, name, email, plan, api_key FROM tenants WHERE email = $1 AND password_hash = $2 AND is_active = TRUE`,
-				strings.TrimSpace(req.Email), hashedPassword,
-			).Scan(&t.ID, &t.Name, &t.Email, &t.Plan, &apiKeyHash)
+				`SELECT id, name, email, plan, api_key, password_hash FROM tenants WHERE email = $1 AND is_active = TRUE`,
+				strings.TrimSpace(req.Email),
+			).Scan(&t.ID, &t.Name, &t.Email, &t.Plan, &apiKeyHash, &storedHash)
 
 			if err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz e-posta veya şifre"})
+				return
+			}
+
+			// Şifre Doğrulama (Legacy SHA256 ve Secure Bcrypt uyumluluğu ile!)
+			isValid := false
+			if checkPasswordHash(req.Password, storedHash) {
+				isValid = true
+			} else {
+				// Legacy SHA-256 fallback (Eski kayıtları bozmamak için)
+				legacyHash := hashAPIKey(req.Password)
+				if legacyHash == storedHash {
+					isValid = true
+					// Otomatik olarak yeni bcrypt formatına yükselt!
+					newBcryptHash, _ := hashPassword(req.Password)
+					_, _ = db.Exec("UPDATE tenants SET password_hash = $1 WHERE id = $2", newBcryptHash, t.ID)
+				}
+			}
+
+			if !isValid {
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz e-posta veya şifre"})
 				return
 			}
@@ -1467,10 +1602,16 @@ func main() {
 				t.ID, "email-login", c.ClientIP(), "success",
 			)
 
-			// X-API-Key middleware doğrulaması için ham şifreyi session key olarak kullanıyoruz!
+			// ── JWT GENERATOR ──
+			token, err := generateJWT(t.ID, t.Name, t.Email, t.Plan)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Oturum anahtarı oluşturulamadı"})
+				return
+			}
+
 			c.JSON(http.StatusOK, gin.H{
 				"status":  "success",
-				"api_key": req.Password, // Ham şifre X-API-Key başlığında taşınır ve password_hash ile eşleşerek middleware'den geçer!
+				"api_key": token, // Güvenli, imzalı JWT token'ı
 				"tenant":  t,
 			})
 			return
@@ -1527,17 +1668,22 @@ func main() {
 			return
 		}
 
-		// Şifreyi hash'le
-		hashedPassword := hashAPIKey(req.Password)
+		// Şifreyi bcrypt ile güvenli hash'le
+		hashedPassword, err := hashPassword(req.Password)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Şifre şifrelenemedi"})
+			return
+		}
 		// Uyumluluk için rastgele bir API key üret
 		rawAPIKey := "sk_free_" + strings.ToLower(req.Email[:3]) + "_" + fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
 		hashedAPIKey := hashAPIKey(rawAPIKey)
 
-		// Geliştirme modu: Veritabanı yoksa mock başarılı dön
+		// Geliştirme modu: Veritabanı yoksa mock başarılı dön + JWT
 		if db == nil {
+			token, _ := generateJWT("00000000-0000-0000-0000-000000000001", req.Name, req.Email, "free")
 			c.JSON(http.StatusOK, gin.H{
 				"status":  "success",
-				"api_key": req.Password, // Ham şifreyi session token olarak dön
+				"api_key": token,
 				"message": "Hesabınız mock modda başarıyla oluşturuldu",
 			})
 			return
@@ -1546,18 +1692,27 @@ func main() {
 		// Tabloda password_hash yoksa ekle
 		_, _ = db.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)")
 
-		_, err := db.Exec(
-			"INSERT INTO tenants (name, email, api_key, password_hash, plan) VALUES ($1, $2, $3, $4, $5)",
+		var tenantID string
+		err = db.QueryRow(
+			"INSERT INTO tenants (name, email, api_key, password_hash, plan) VALUES ($1, $2, $3, $4, $5) RETURNING id",
 			req.Name, strings.TrimSpace(req.Email), hashedAPIKey, hashedPassword, "free",
-		)
+		).Scan(&tenantID)
+		
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "Bu e-posta adresi zaten kayıtlı"})
 			return
 		}
 
+		// ── JWT GENERATOR ──
+		token, err := generateJWT(tenantID, req.Name, req.Email, "free")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Oturum anahtarı oluşturulamadı"})
+			return
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "success",
-			"api_key": req.Password, // Ham şifreyi session token olarak dön
+			"api_key": token, // Güvenli, imzalı JWT token'ı
 			"message": "Hesabınız başarıyla oluşturuldu",
 		})
 	})
