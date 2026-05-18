@@ -936,6 +936,7 @@ export default function App() {
   const [uptimeData, setUptimeData] = useState([])
   const [sysActions, setSysActions] = useState({ blocked_ips: [] })
   const [selectedNode, setSelectedNode] = useState(null)
+  const [copiedKey, setCopiedKey] = useState(false)
   const wsRef = useRef(null)
 
   const toastIdRef = useRef(0)
@@ -1112,8 +1113,58 @@ export default function App() {
           })}
         </nav>
         <div className="sidebar-footer-info">
-          <div className="sidebar-api-label">API Key</div>
-          <div className="sidebar-api-val">{apiKey}</div>
+          <div className="sidebar-api-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Oturum Anahtarı (JWT)</span>
+            {copiedKey && <span style={{ color: '#10b981', fontSize: '9px', fontWeight: 'bold' }}>✓ Kopyalandı</span>}
+          </div>
+          <div 
+            className="sidebar-api-val" 
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'space-between',
+              background: 'rgba(6, 182, 212, 0.05)',
+              border: '1px solid rgba(6, 182, 212, 0.15)',
+              padding: '6px 10px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              color: '#a5f3fc',
+              fontFamily: 'monospace',
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+              userSelect: 'none'
+            }}
+            onClick={() => {
+              navigator.clipboard.writeText(apiKey);
+              setCopiedKey(true);
+              setTimeout(() => setCopiedKey(false), 2000);
+            }}
+            title="Kopyalamak için tıklayın"
+          >
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {apiKey && apiKey.length > 20 ? `${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 10)}` : apiKey}
+            </span>
+            <svg 
+              width="13" 
+              height="13" 
+              viewBox="0 0 24 24" 
+              fill="none" 
+              stroke="currentColor" 
+              strokeWidth="2" 
+              strokeLinecap="round" 
+              strokeLinejoin="round" 
+              style={{ marginLeft: '6px', opacity: 0.7, color: copiedKey ? '#10b981' : '#06b6d4', transition: 'color 0.2s' }}
+            >
+              {copiedKey ? (
+                <polyline points="20 6 9 17 4 12"></polyline>
+              ) : (
+                <>
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </>
+              )}
+            </svg>
+          </div>
           <button 
             className="landing-btn" 
             onClick={handleLogout}
